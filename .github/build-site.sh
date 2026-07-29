@@ -82,6 +82,18 @@ written by hand. Built $built.
   <li><b>0</b><span>external dependencies</span></li>
 </ul>
 
+<h2>Network intrusion detection</h2>
+<p>Alerts are matched to MITRE ATT&amp;CK techniques and contained automatically — unless
+containment would do more damage than the intrusion. This is the reason detection teams
+distrust automated response: the dangerous case is not a wrong detector, it is a right one
+whose response takes the company off the internet. A pre-execution probe assesses the blast
+radius first, so blocking an address that turns out to be our own VPN egress, or isolating the
+jump host the responders log in through, routes to an analyst instead of executing.</p>
+HTML
+
+block demo-output/network_detection.txt >> "$out/index.html"
+
+cat >> "$out/index.html" <<'HTML'
 <h2>Security monitoring — a plugin with Go code</h2>
 <p>An alert matches a brute-force technique, and a sandbox probe runs <em>before</em> the
 containment action rather than after it. Against an ordinary workstation the action proceeds.

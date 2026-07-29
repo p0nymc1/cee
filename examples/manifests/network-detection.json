@@ -1,0 +1,57 @@
+{
+  "name": "network-detection",
+  "intents": [
+    {"node_id": "network-detection.T1046_service_discovery",
+     "examples": ["horizontal port scan detected from internal host", "sequential connection attempts across many ports", "network service discovery sweep"],
+     "entry_workflow_ref": "network-detection.triage_and_contain"},
+
+    {"node_id": "network-detection.T1071_c2_beaconing",
+     "examples": ["periodic outbound connections with fixed interval", "beaconing to an unclassified external host", "regular small payloads to one destination"],
+     "entry_workflow_ref": "network-detection.triage_and_contain"},
+
+    {"node_id": "network-detection.T1048_exfiltration",
+     "examples": ["unusually large outbound transfer over dns", "high volume egress to a new destination", "data leaving over a non standard protocol"],
+     "entry_workflow_ref": "network-detection.triage_and_contain"},
+
+    {"node_id": "network-detection.T1110_password_spray",
+     "examples": ["many failed logins across multiple accounts from one source", "password spray against the vpn gateway", "repeated authentication failures single source"],
+     "entry_workflow_ref": "network-detection.triage_and_contain"},
+
+    {"node_id": "network-detection.T1021_lateral_movement",
+     "examples": ["smb connections to many hosts from one workstation", "remote service access spreading across subnet", "lateral movement over rdp"],
+     "entry_workflow_ref": "network-detection.triage_and_contain"}
+  ],
+
+  "policies": [
+    {"policy_id": "insufficient_confidence", "fallback_step_ref": "queue_for_review"},
+    {"policy_id": "blast_radius_gate", "fallback_step_ref": "hold_for_analyst"}
+  ],
+
+  "workflows": [{
+    "workflow_id": "network-detection.triage_and_contain",
+    "entry_step_id": "require_confidence",
+    "steps": [
+      {"step_id": "require_confidence", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "detector_confidence", "op": "gte", "value": 0.8},
+       "circuit_breaker_policy_ref": "insufficient_confidence",
+       "on_success": "select_response"},
+
+      {"step_id": "select_response", "type": "leaf", "action_ref": "netdet.select_response",
+       "on_success": "contain"},
+
+      {"step_id": "contain", "type": "leaf", "action_ref": "netdet.apply_containment",
+       "sandbox_probe_ref": "netdet.assess_blast_radius",
+       "circuit_breaker_policy_ref": "blast_radius_gate",
+       "on_success": "record_contained"},
+
+      {"step_id": "record_contained", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "contained automatically"}}},
+
+      {"step_id": "queue_for_review", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "queued for review: detector confidence below the auto-action threshold"}}},
+
+      {"step_id": "hold_for_analyst", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "held for an analyst: containment would have hit something it must not"}}}
+    ]
+  }]
+}

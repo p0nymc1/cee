@@ -76,7 +76,7 @@ jobs:
       - name: Run everything, capturing output
         run: |
           mkdir -p demo-output
-          for ex in security_monitoring human_approval meta_scenarios; do
+          for ex in network_detection security_monitoring human_approval meta_scenarios; do
             go run "./examples/$ex" | tee "demo-output/$ex.txt"
           done
           for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do
@@ -105,6 +105,17 @@ jobs:
             echo "| Packages passing | $(cat demo-output/packages.txt) |"
             echo "| Tests | $(cat demo-output/tests.txt) |"
             echo "| External dependencies | 0 |"
+            echo
+            echo "## Network intrusion detection"
+            echo
+            echo "Alerts are matched to MITRE ATT&CK techniques and contained automatically --"
+            echo "unless containment would do more damage than the intrusion. A pre-execution"
+            echo "probe assesses the blast radius first, so blocking an address that turns out"
+            echo "to be our own VPN egress, or isolating the jump host the responders log in"
+            echo "through, routes to an analyst instead of executing."
+            echo '```'
+            cat demo-output/network_detection.txt
+            echo '```'
             echo
             echo "## Security monitoring — an L2 plugin"
             echo
