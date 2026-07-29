@@ -12,6 +12,8 @@
 package filestore
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -136,6 +138,63 @@ func (s *Store) Delete(pointer string) error {
 		return fmt.Errorf("filestore: could not delete state %q: %w", pointer, err)
 	}
 	return nil
+}
+
+// Consume atomically claims a parked run.
+//
+// The claim is a rename, not a read-then-delete. POSIX rename unlinks the
+// source as one indivisible operation, so when several processes race for
+// the same pointer exactly one rename succeeds and every other gets ENOENT
+// -- which is the guarantee that a human's decision cannot be applied twice
+// by two replicas that both accepted the same resume link. A read-then-delete
+// would let both read before either deleted.
+//
+// The claimed file is removed once decoded. If the process dies between the
+// rename and the delete, the leftover is named so that Pending skips it: a
+// crash loses one parked run rather than resurrecting a consumed pointer.
+func (s *Store) Consume(pointer string) (execution.State, error) {
+	if err := checkPointer(pointer); err != nil {
+		return execution.State{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	suffix, err := claimSuffix()
+	if err != nil {
+		return execution.State{}, err
+	}
+	// checkPointer rejects ".", so a claim name can never collide with, or
+	// be mistaken for, a live pointer.
+	claim := s.path(pointer) + "." + suffix + ".claimed"
+
+	if err := os.Rename(s.path(pointer), claim); err != nil {
+		if os.IsNotExist(err) {
+			return execution.State{}, fmt.Errorf("no suspended workflow for pointer %q", pointer)
+		}
+		return execution.State{}, fmt.Errorf("filestore: could not claim state %q: %w", pointer, err)
+	}
+	defer os.Remove(claim)
+
+	data, err := os.ReadFile(claim)
+	if err != nil {
+		return execution.State{}, fmt.Errorf("filestore: could not read claimed state %q: %w", pointer, err)
+	}
+	var state execution.State
+	if err := json.Unmarshal(data, &state); err != nil {
+		return execution.State{}, fmt.Errorf("filestore: state %q is corrupt: %w", pointer, err)
+	}
+	return state, nil
+}
+
+// claimSuffix makes a claim filename unique so two racing claims of
+// different pointers, or a retry after a crash, cannot collide.
+func claimSuffix() (string, error) {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("filestore: could not generate a claim suffix: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // Pending lists the parked runs, for operator tooling: what is waiting, and

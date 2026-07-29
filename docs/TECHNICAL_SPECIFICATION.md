@@ -209,6 +209,18 @@ engine.SetStore(store)
 
 **一个必须知道的取舍**：`State.Ctx` 是 `map[string]any`，经 JSON 往返后**所有数字都变成 `float64`**。标准动作不受影响（`stdlib` 的比较统一走 `toFloat`），但一个 Go Hook 如果在恢复后写 `ctx["n"].(int)` 会 panic。要么断言 `float64`，要么别把非 JSON 原生类型放进会挂起的流程的 context 里。这条行为由 `TestNumbersComeBackAsFloat64` 钉住，不会悄悄改变。
 
+### 5.7 `Consume`：把"取用"做成一个不可分割的动作
+
+`Store` 接口上**没有 `Delete`**，取用一个指针只有一个办法：`Consume(pointer) (State, error)`，原子地"读出并移除"。
+
+这不是因为原来的 `Load` + `Delete` 有竞态——它其实是安全的，`unlink`/`os.Remove` 本身就是原子的，两个进程同时删同一个文件只有一个成功，另一个拿到 `ENOENT` 而不会继续往下跑。**真正的风险在于这个正确性来自实现细节，而不是接口约定**：一个后来者写 Redis 或 SQL 后端时，很容易把 `Delete` 写成"删掉就行、不报告有没有删到"，那一刻"审批不可重放"就悄悄失效了，而且不会有任何东西报错。`MemoryStore` 一开始就正是这么写的。
+
+所以接口只暴露原子操作：实现者没有机会把它拆成一对看起来没问题的调用。附带好处是网络后端少一次往返。
+
+`filestore` 的实现是 `rename` 抢占：把 `<pointer>` 改名成 `<pointer>.<随机>.claimed`，POSIX 保证并发的 `rename` 只有一个能成功，其余拿到 `ENOENT`。读完就删掉。
+
+`Engine.Resume` 的顺序是 **`Load`（只读校验）→ `Consume`（原子抢占）→ 执行**。用不抢占的 `Load` 先校验，是为了让"工作流已经不在注册表里了"这类情况能报错而**不销毁**存档——否则一次部署变更就会把待审批队列吃掉。
+
 ## 6. 边缘 LLM 注入器（`llminjector`）
 
 `Injector.Extract` 的核心行为不是"调用 LLM"，而是**过滤 LLM 的输出**：
@@ -359,7 +371,7 @@ rank plugin           determinism  events   errors   LLM calls eliminated vs age
 - **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
 - **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
 - **`filestore` 没有过期回收**：挂起的流程会一直躺在目录里。一个永远等不到审批的流程不会自己消失，也没有 TTL 或归档机制——运维得自己拿 `Pending()` 做清理。
-- **`filestore` 不做跨进程加锁**：进程内有 mutex，写是原子的（临时文件 + `rename`），所以不会读到半个文件；但两个进程同时 `Resume` 同一个指针时，两边都可能先 `Load` 成功再各自 `Delete`，"一次性"保证在多进程下会破。单进程部署没问题，多副本部署需要一个带原子取用（compare-and-delete）的后端。
+- **`filestore` 不做跨进程加锁**，但**"一次性"保证本身是跨进程成立的**——见 5.7，它靠的是 `rename`/`unlink` 的原子性，不需要锁。这里没有的是别的东西：没有租约（一个进程 `Consume` 之后崩溃，这个流程就永久丢了，没人会把它放回去）、没有公平性（谁先到谁拿到）。
 - **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
 - **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
 - **Scorecard 的 token 维度**：`scorecard` 目前度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实；但它**还没有真实的 token 消耗数**（注入器尚未接真实 LLM），也**还没有内建的 Agent 对照组跑批**——排行榜、基准套件都还是路线图,不在当前代码里。

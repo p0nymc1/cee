@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"cee/execution"
@@ -287,5 +289,110 @@ func TestSavedFilesAreOwnerOnly(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("expected 0600, got %#o", perm)
+	}
+}
+
+// The single-use guarantee under concurrency. A load-then-delete pair would
+// let several racers all read the state before any of them removed it, and
+// every one of them would apply the same human decision. Exactly one may win.
+func TestConcurrentConsumeHasExactlyOneWinner(t *testing.T) {
+	store, _ := newStore(t)
+	if err := store.Save(sampleState("abc123")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const racers = 32
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	done.Add(racers)
+
+	var mu sync.Mutex
+	var winners, losers int
+
+	for i := 0; i < racers; i++ {
+		go func() {
+			defer done.Done()
+			start.Wait() // release everyone at once
+			state, err := store.Consume("abc123")
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				winners++
+				if state.Reason != "awaiting manager decision" {
+					t.Errorf("winner got the wrong state: %+v", state)
+				}
+			} else {
+				losers++
+			}
+		}()
+	}
+
+	start.Done()
+	done.Wait()
+
+	if winners != 1 {
+		t.Fatalf("expected exactly 1 winner, got %d (losers %d)", winners, losers)
+	}
+	if losers != racers-1 {
+		t.Fatalf("expected %d losers, got %d", racers-1, losers)
+	}
+}
+
+// The engine-level version of the same guarantee: many Resume calls on one
+// pointer must apply the decision exactly once.
+func TestConcurrentResumeAppliesTheDecisionOnce(t *testing.T) {
+	_, dir := newStore(t)
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var applied int64
+	engine := execution.NewEngine(nil)
+	engine.SetStore(store)
+	engine.RegisterWorkflow(&execution.Workflow{
+		WorkflowID:  "ops.approve",
+		EntryStepID: "hold",
+		Steps: map[string]execution.Step{
+			"hold": &execution.LeafStep{
+				StepID: "hold",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return execution.Suspend("awaiting human approval")
+				},
+				OnSuccess: "act",
+			},
+			"act": &execution.LeafStep{
+				StepID: "act",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					atomic.AddInt64(&applied, 1) // the irreversible action
+					return map[string]any{"done": true}, nil
+				},
+			},
+		},
+	})
+
+	parked, err := engine.Run("ops.approve", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const racers = 16
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	done.Add(racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			defer done.Done()
+			start.Wait()
+			engine.Resume(parked.StatePointer, map[string]any{"approved": true})
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	if got := atomic.LoadInt64(&applied); got != 1 {
+		t.Fatalf("the decision was applied %d times; it must be applied exactly once", got)
 	}
 }

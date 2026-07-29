@@ -400,14 +400,19 @@ func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.Wor
 			"suspended step %q is no longer a leaf step", state.StepID)
 	}
 
-	// Consume the pointer before running: a resume that fails partway must
-	// not leave a token that could apply the same decision twice.
-	if err := e.store.Delete(pointer); err != nil {
-		return entities.WorkflowResult{}, fmt.Errorf("could not consume resume pointer: %w", err)
+	// Claim the pointer before running. This is one atomic step rather than
+	// a load-then-delete pair, so when several processes resume the same
+	// pointer at once exactly one gets past here -- the losers see the
+	// pointer already gone rather than applying the same decision again.
+	// The validation above deliberately used a non-claiming Load, so a run
+	// that turns out to be unresumable is reported without being destroyed.
+	claimed, err := e.store.Consume(pointer)
+	if err != nil {
+		return entities.WorkflowResult{}, fmt.Errorf("could not claim resume pointer: %w", err)
 	}
 
-	result, err := e.runFrom(state.WorkflowID, leaf.OnSuccess, merge(state.Ctx, resolution), 0)
-	result.Trace = append(append([]string{}, state.Trace...), result.Trace...)
+	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, merge(claimed.Ctx, resolution), 0)
+	result.Trace = append(append([]string{}, claimed.Trace...), result.Trace...)
 	return result, err
 }
 

@@ -60,8 +60,23 @@ type State struct {
 // particular backend.
 type Store interface {
 	Save(State) error
+
+	// Load reads a parked run without claiming it. The engine uses it to
+	// check a run is still resumable before committing to it, so a pointer
+	// is never destroyed just because a deployment moved on.
 	Load(pointer string) (State, error)
-	Delete(pointer string) error
+
+	// Consume atomically claims a parked run: it returns the state and
+	// removes it in one indivisible step, so that when several processes
+	// race to resume the same pointer exactly one of them can win and the
+	// rest get an error.
+	//
+	// This is deliberately the only way the engine takes a pointer -- there
+	// is no plain Delete on this interface, because a load-then-delete pair
+	// looks correct and silently permits a decision to be applied twice
+	// under concurrency. Making the atomic operation the only operation
+	// means an implementation cannot get that wrong by accident.
+	Consume(pointer string) (State, error)
 }
 
 // MemoryStore is the default Store: process-local and safe for concurrent
@@ -96,8 +111,24 @@ func (m *MemoryStore) Load(pointer string) (State, error) {
 func (m *MemoryStore) Delete(pointer string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.states[pointer]; !ok {
+		return fmt.Errorf("no suspended workflow for pointer %q", pointer)
+	}
 	delete(m.states, pointer)
 	return nil
+}
+
+// Consume claims a parked run. The lookup and the removal happen under one
+// lock, so concurrent callers cannot both walk away with the same state.
+func (m *MemoryStore) Consume(pointer string) (State, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.states[pointer]
+	if !ok {
+		return State{}, fmt.Errorf("no suspended workflow for pointer %q", pointer)
+	}
+	delete(m.states, pointer)
+	return state, nil
 }
 
 // Pending lists the pointers currently held, for operator tooling.
