@@ -1,0 +1,37 @@
+{
+  "name": "ticket-routing",
+  "intents": [
+    {"node_id": "ticket-routing.triage", "examples": ["route this ticket", "triage incoming ticket", "which queue does this go to"], "entry_workflow_ref": "ticket-routing.triage"}
+  ],
+  "policies": [
+    {"policy_id": "not_urgent", "fallback_step_ref": "check_billing"},
+    {"policy_id": "not_billing", "fallback_step_ref": "check_bug"},
+    {"policy_id": "not_bug", "fallback_step_ref": "route_general"}
+  ],
+  "workflows": [{
+    "workflow_id": "ticket-routing.triage",
+    "entry_step_id": "check_urgent",
+    "steps": [
+      {"step_id": "check_urgent", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "severity", "op": "eq", "value": "urgent"},
+       "circuit_breaker_policy_ref": "not_urgent", "on_success": "route_pager"},
+
+      {"step_id": "check_billing", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "category", "op": "eq", "value": "billing"},
+       "circuit_breaker_policy_ref": "not_billing", "on_success": "route_finance"},
+
+      {"step_id": "check_bug", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "category", "op": "in", "value": ["bug", "defect", "crash"]},
+       "circuit_breaker_policy_ref": "not_bug", "on_success": "route_engineering"},
+
+      {"step_id": "route_pager", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"queue": "pager-duty", "paged": true}}},
+      {"step_id": "route_finance", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"queue": "finance-ops"}}},
+      {"step_id": "route_engineering", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"queue": "engineering"}}},
+      {"step_id": "route_general", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"queue": "general-support"}}}
+    ]
+  }]
+}

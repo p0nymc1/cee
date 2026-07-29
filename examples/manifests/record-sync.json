@@ -1,0 +1,30 @@
+{
+  "name": "record-sync",
+  "intents": [
+    {"node_id": "record-sync.push", "examples": ["sync this record to the target", "push record downstream", "replicate this row"], "entry_workflow_ref": "record-sync.push"}
+  ],
+  "policies": [
+    {"policy_id": "reject_invalid", "fallback_step_ref": "record_rejected"},
+    {"policy_id": "hold_on_conflict", "fallback_step_ref": "record_conflict"}
+  ],
+  "workflows": [{
+    "workflow_id": "record-sync.push",
+    "entry_step_id": "validate",
+    "steps": [
+      {"step_id": "validate", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "record_id", "op": "neq", "value": ""},
+       "circuit_breaker_policy_ref": "reject_invalid", "on_success": "write"},
+
+      {"step_id": "write", "type": "leaf", "action_ref": "sync.write_to_target",
+       "sandbox_probe_ref": "sync.check_target_unchanged",
+       "circuit_breaker_policy_ref": "hold_on_conflict", "on_success": "record_written"},
+
+      {"step_id": "record_written", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"synced": true}}},
+      {"step_id": "record_rejected", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"synced": false, "outcome": "rejected: no record_id"}}},
+      {"step_id": "record_conflict", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"synced": false, "outcome": "held: the pre-write check refused"}}}
+    ]
+  }]
+}

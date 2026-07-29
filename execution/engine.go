@@ -256,10 +256,11 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 					return entities.WorkflowResult{}, err
 				}
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
-				next, breakErr := e.onFailure(s, err.Error())
+				next, nextCtx, breakErr := e.onFailure(s, err.Error(), ctx)
 				if breakErr != nil {
 					return entities.WorkflowResult{}, breakErr
 				}
+				ctx = nextCtx
 				stepID = next
 				continue
 			}
@@ -287,10 +288,11 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 						reason = err.Error()
 					}
 					e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
-					next, breakErr := e.onFailure(s, reason)
+					next, nextCtx, breakErr := e.onFailure(s, reason, ctx)
 					if breakErr != nil {
 						return entities.WorkflowResult{}, breakErr
 					}
+					ctx = nextCtx
 					stepID = next
 					continue
 				}
@@ -307,10 +309,11 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 					return e.suspend(workflow, s.StepID, suspended, ctx, trace, depth)
 				}
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
-				next, breakErr := e.onFailure(s, err.Error())
+				next, nextCtx, breakErr := e.onFailure(s, err.Error(), ctx)
 				if breakErr != nil {
 					return entities.WorkflowResult{}, breakErr
 				}
+				ctx = nextCtx
 				stepID = next
 				continue
 			}
@@ -322,7 +325,13 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 		}
 	}
 
-	return entities.WorkflowResult{Output: ctx, StatePointer: workflowRef, Trace: trace}, nil
+	// A run that reached the end has nothing to resume, so it carries no
+	// pointer. StatePointer used to echo workflowRef here, from before
+	// suspension existed, which left the field meaning two different things
+	// -- a resume token when parked, an identifier when finished -- and made
+	// the obvious "did this park?" test silently wrong for every completed
+	// run.
+	return entities.WorkflowResult{Output: ctx, Trace: trace}, nil
 }
 
 // suspend parks a run: it saves the context at the suspension point and
@@ -424,13 +433,37 @@ func (e *Engine) observe(fn func(Observer)) {
 	}
 }
 
-func (e *Engine) onFailure(step Step, reason string) (string, error) {
+// Context keys the engine writes when a breaker diverts to a fallback. They
+// are namespaced because they are the one case where the engine puts its own
+// content into a domain's context, and a domain field must never collide with
+// them by accident.
+const (
+	// FailureReasonKey holds why the diverted step failed -- an action's
+	// error text, or a probe's DetectedFailureMode.
+	FailureReasonKey = "cee.failure_reason"
+	// FailedStepKey holds the step ID that failed.
+	FailedStepKey = "cee.failed_step"
+)
+
+// onFailure decides where a failed step goes and, when it goes to a fallback,
+// tells that fallback what happened.
+//
+// Without this the reason was dropped on the fallback path and only survived
+// when there was no fallback at all -- which inverted the need, since a step
+// that exists to handle failure is exactly the one that has to know which
+// failure it is handling. Two different probe verdicts would otherwise land
+// in the same fallback indistinguishably, and a manifest that reported a
+// fixed message there would be confidently wrong about one of them.
+func (e *Engine) onFailure(step Step, reason string, ctx map[string]any) (string, map[string]any, error) {
 	if ref := step.circuitBreakerPolicyRef(); ref != "" {
 		if policy, ok := e.policies[ref]; ok && policy.FallbackStepRef != "" {
-			return policy.FallbackStepRef, nil
+			return policy.FallbackStepRef, merge(ctx, map[string]any{
+				FailureReasonKey: reason,
+				FailedStepKey:    step.ID(),
+			}), nil
 		}
 	}
-	return "", &CircuitBreakerTripped{StepID: step.ID(), Reason: reason}
+	return "", ctx, &CircuitBreakerTripped{StepID: step.ID(), Reason: reason}
 }
 
 // bypassesBreaker reports whether err describes a defect in how the

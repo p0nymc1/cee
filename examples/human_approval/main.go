@@ -102,7 +102,8 @@ func report(result entities.WorkflowResult, err error) {
 		fmt.Printf("  halted: %v\n", err)
 		return
 	}
-	if result.StatePointer != "" && result.Output["outcome"] == nil {
+	// A non-empty pointer means exactly one thing: the run is parked.
+	if result.StatePointer != "" {
 		fmt.Printf("  suspended, resume pointer issued (%s...)\n", result.StatePointer[:8])
 		fmt.Printf("  trace: %v\n", result.Trace)
 		return

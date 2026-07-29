@@ -1,0 +1,25 @@
+{
+  "name": "change-window",
+  "intents": [
+    {"node_id": "change-window.apply", "examples": ["apply this config change", "roll out the change", "deploy this change"], "entry_workflow_ref": "change-window.apply"}
+  ],
+  "policies": [
+    {"policy_id": "defer_to_window", "fallback_step_ref": "wait_for_window"}
+  ],
+  "workflows": [{
+    "workflow_id": "change-window.apply",
+    "entry_step_id": "check_window",
+    "steps": [
+      {"step_id": "check_window", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "in_maintenance_window", "op": "eq", "value": true},
+       "circuit_breaker_policy_ref": "defer_to_window", "on_success": "apply"},
+
+      {"step_id": "wait_for_window", "type": "leaf", "action_ref": "std.suspend",
+       "with": {"reason": "outside the maintenance window; deferred until it opens"},
+       "on_success": "apply"},
+
+      {"step_id": "apply", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"applied": true}}}
+    ]
+  }]
+}

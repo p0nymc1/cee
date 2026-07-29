@@ -58,7 +58,11 @@ type ProbeResult struct {
 // WorkflowResult is what the deterministic execution engine returns once a
 // workflow's step DAG has run to completion.
 type WorkflowResult struct {
-	Output       map[string]any
+	Output map[string]any
+	// StatePointer is the token that resumes a suspended run, and is empty
+	// for a run that finished. It is therefore the test for "did this park?"
+	// -- a non-empty pointer means the workflow is waiting on something
+	// outside the engine and Resume will pick it up.
 	StatePointer string
 	Trace        []string
 }

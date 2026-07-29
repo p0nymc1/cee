@@ -138,6 +138,17 @@ flowchart TD
 
 `LeafStep`/`CompositeStep` 只声明一个 `CircuitBreakerPolicyRef string`；真正的 `FallbackStepRef` 定义在 `Engine.RegisterPolicy` 注册的全局策略表里。这样任何一个策略被谁引用、一共有多少个安全网，都可以从策略表一处审计，而不用扫遍所有 Step 定义。
 
+兜底 Step 会拿到两个引擎写入的 context 字段，告诉它**自己是在处理哪一次失败**：
+
+| key | 内容 |
+|---|---|
+| `cee.failure_reason` | 失败原因——Action 的 error 文本，或探针的 `DetectedFailureMode` |
+| `cee.failed_step` | 失败的那个 Step ID |
+
+这两个 key 只在断路器真的改道时才写；正常跑完的流程输出里不会有它们。加 `cee.` 前缀是因为这是引擎唯一一次往领域的 context 里塞自己的内容，不能跟领域字段撞名。
+
+**为什么需要**：原来 `reason` 只在"没有 fallback"时进 `CircuitBreakerTripped`，一旦有 fallback 就被丢掉——正好反了。兜底 Step 的存在意义就是处理失败，它恰恰是最需要知道"是哪次失败"的那个。写 `examples/meta_scenarios` 的同步场景时这个缺陷立刻暴露：探针的两种拒绝理由（目标行被人改过 / 目标行根本不存在）走到同一个兜底 Step，而那个 Step 只会报一句写死的话，于是**对其中一种情况是确凿的错报**。由 `TestTwoProbeVerdictsReachingOneFallbackStayDistinct` 锁住。
+
 ### 5.4 失控上限：结构性缺陷不该由断路器兜
 
 DAG 的形状写错时，5.2 的执行循环有两条路会失控。这两条都**不是业务失败**，因此不走断路器：
@@ -174,7 +185,7 @@ return execution.Suspend("awaiting human approval")
 用 error 作为控制信号沿用的是标准库 `fs.SkipDir` 的先例：它靠类型被识别，不是故障。引擎看到它**不查断路器、不跳 fallback、不重试**，而是：
 
 1. 把当前 `ctx`、`trace`、挂起点的 `StepID` 和 `Reason` 存进 `Store`；
-2. 生成一个 `crypto/rand` 的不可猜测指针，回填到 `WorkflowResult.StatePointer`；
+2. 生成一个 `crypto/rand` 的不可猜测指针，回填到 `WorkflowResult.StatePointer`。**跑完的流程这个字段是空的**，所以 `StatePointer != ""` 就是"这次跑是不是被挂起了"的判据，没有别的含义。（早期它在正常完成时会回填 `workflowRef`，那时挂起功能还不存在；两种含义挤在一个字段里，会让这个最自然的判断对每一次正常完成都悄悄给出错误答案。）
 3. 正常返回（`err == nil`）——挂起不是错误。
 
 `Engine.Resume(pointer, resolution)` 把外部的决定 `resolution` 合并进存下来的 ctx，**从挂起那个 Step 的 `OnSuccess` 继续**（等待已经结束，挂起点本身不重跑）。
