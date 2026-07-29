@@ -1,0 +1,53 @@
+{
+  "name": "local-netwatch",
+  "intents": [
+    {"node_id": "local-netwatch.screen_connection",
+     "examples": ["screen this outbound connection", "check this connection for risk", "review established connections"],
+     "entry_workflow_ref": "local-netwatch.screen"}
+  ],
+
+  "policies": [
+    {"policy_id": "internal_only", "fallback_step_ref": "note_internal"},
+    {"policy_id": "nothing_found", "fallback_step_ref": "note_clean"},
+    {"policy_id": "not_worth_alerting", "fallback_step_ref": "suppressed"}
+  ],
+
+  "workflows": [{
+    "workflow_id": "local-netwatch.screen",
+    "entry_step_id": "enrich",
+    "steps": [
+      {"step_id": "enrich", "type": "leaf", "action_ref": "netwatch.enrich",
+       "on_success": "check_external"},
+
+      {"step_id": "check_external", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "peer_is_public", "op": "eq", "value": true},
+       "circuit_breaker_policy_ref": "internal_only",
+       "on_success": "assess"},
+
+      {"step_id": "assess", "type": "leaf", "action_ref": "netwatch.assess",
+       "on_success": "gate"},
+
+      {"step_id": "gate", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "finding", "op": "neq", "value": "none"},
+       "circuit_breaker_policy_ref": "nothing_found",
+       "on_success": "raise"},
+
+      {"step_id": "raise", "type": "leaf", "action_ref": "netwatch.raise",
+       "sandbox_probe_ref": "netwatch.assess_alert_worth",
+       "circuit_breaker_policy_ref": "not_worth_alerting",
+       "on_success": "record"},
+
+      {"step_id": "record", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "FLAGGED"}}},
+
+      {"step_id": "note_internal", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "internal — not an outbound connection"}}},
+
+      {"step_id": "note_clean", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "ok"}}},
+
+      {"step_id": "suppressed", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "not worth alerting"}}}
+    ]
+  }]
+}

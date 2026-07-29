@@ -1,0 +1,21 @@
+{
+  "_comment": "把这个文件复制成仓库根目录的 netwatch.json 再改。这里没有任何威胁情报——风险地址由你自己列。",
+
+  "risky_peers": {
+    "203.0.113.66": "上周钓鱼邮件里的地址",
+    "198.51.100.23": "同事机器被入侵时连过的 C2"
+  },
+
+  "expected_talkers": [
+    "Google Chrome", "firefox", "Safari", "com.apple.WebKit.Networking",
+    "Slack", "zoom.us", "Spotify", "Dropbox", "node"
+  ],
+
+  "plaintext_ports": {
+    "21": "FTP — 凭据和数据都是明文",
+    "23": "Telnet — 凭据明文",
+    "110": "POP3 — 凭据明文",
+    "143": "IMAP 未加密",
+    "3389": "RDP 暴露在公网"
+  }
+}
