@@ -41,6 +41,12 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, *execution.MemoryS
 
 	router := intentrouter.NewRouter(0.3)
 	engine := execution.NewEngine(nil)
+	// In-memory keeps the demo self-contained: it runs and resumes within
+	// one process and leaves nothing on disk. A real approval queue waits
+	// hours or days, so it would use filestore.New("./state") instead --
+	// that swap is this one line, because the engine only ever knows the
+	// Store interface. See filestore's TestResumeWorksAcrossAnEngineRestart
+	// for a resume that survives the engine being thrown away.
 	store := execution.NewMemoryStore()
 	engine.SetStore(store) // without this, a suspending step fails loudly
 

@@ -43,6 +43,7 @@ flowchart TB
 | `execution` | 确定性执行引擎（DEE）：走 Step DAG，调用沙盒门禁、执行断路器兜底、挂起/恢复等待外部事件的流程 | `Engine`、`Step`、`LeafStep`、`CompositeStep`、`Workflow`、`CircuitBreakerPolicy`、`CircuitBreakerTripped`、`Prober`、`Suspended`、`Store`、`MemoryStore`、`State` |
 | `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
 | `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
+| `filestore` | 落盘的 `execution.Store` 实现：挂起的流程存成 JSON，跨重启存活 | `Store`、`New`、`Pending` |
 | `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
 | `scorecard` | 度量一次请求：确定性步数 / LLM 调用 / 沙盒预演 / 断路器次数 / 耗时，用于跟"朴素 Agent"基线对比 | `Scorecard`、`Recorder`、`NewRecorder` |
 | `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`/`std.suspend`） |
@@ -178,7 +179,7 @@ return execution.Suspend("awaiting human approval")
 
 - **指针一次性**：`Resume` 在执行前就把指针从 Store 删掉。同一个审批不能被重放两次。
 - **不配 `Store` 就报错**：没调 `SetStore` 时挂起直接返回 `*NoSuspensionSupport`，而不是退化成普通失败让断路器吞掉。
-- **`Store` 是接口**，默认 `MemoryStore`（进程内、并发安全、重启即丢）。`State` 是纯值类型、不含引擎指针，可以直接序列化——换成文件/数据库实现不动引擎，跟 `Prober` 的安排完全一致。
+- **`Store` 是接口**，两个实现：`execution.MemoryStore`（进程内、并发安全、重启即丢，够开发和测试用）和 `filestore.Store`（落盘、跨重启存活）。`State` 是纯值类型、不含引擎指针，可直接序列化——换实现不动引擎，跟 `Prober` 的安排完全一致。见 5.6。
 - **恢复后无需新原语做分支**：`resolution` 就是普通 context 字段，下一步用 `std.require` 比一下 `approved` 即可，失败经断路器走到"驳回"分支——复用 8.3 那套机制。
 
 完整可运行范例：`examples/human_approval`（零 Go hook 的纯 L1 插件）。它的 trace 跨越挂起仍然是连续的一条：
@@ -186,6 +187,27 @@ return execution.Suspend("awaiting human approval")
 ```
 [check_threshold hold_for_human apply_decision record_approved]
 ```
+
+### 5.6 落盘的 Store（`filestore`）
+
+`MemoryStore` 重启即丢，而"等人工审批"天然跨小时甚至跨天——一个重启就丢光待审批队列的审批流实际上没法用。`filestore.Store` 把每个挂起的流程按恢复指针存成一个 JSON 文件：
+
+```go
+store, err := filestore.New("./state")   // 目录 0700，文件 0600
+engine.SetStore(store)
+```
+
+它放在独立包而不是 `execution` 里，理由跟 `sandbox` 一样：引擎只依赖 `Store` 接口，文件 I/O 不该进引擎内核。
+
+几个实现上的决定：
+
+- **原子写**：先写临时文件、`Sync` 落盘、再 `rename`。`rename` 在 POSIX 上是原子的，所以读者要么看到旧文件要么看到新文件，永远读不到写了一半的状态；写到一半崩溃也只是留下临时文件，原状态完好。先 `Sync` 再 `rename` 是必要的——这个 Store 存在的意义就是扛崩溃，而"改名先于内容落盘"扛不住崩溃。
+- **指针即文件名，所以指针必须校验**。`Load`/`Delete` 的 pointer 是从外部来的（CLI 参数、HTTP 参数），直接当文件名用就是拿不可信输入拼路径。`checkPointer` 把它限制在 `[A-Za-z0-9_-]`，于是分隔符、`..`、NUL、绝对路径都进不来。校验的是字符集而不是"必须是 32 位十六进制"，这样引擎将来换指针格式也不会连带失效。
+- **`Delete` 一个已经没有的指针要报错**，不能静默成功——引擎正是靠 `Delete` 保证审批不可重放，这里吞掉错误等于把一次重复恢复藏起来。
+- **`Pending()` 跳过坏文件而不是整体失败**：一个损坏的文件不该让运维看不见其余所有待审批项。
+- **权限**：目录 `0700`、文件 `0600`。挂起状态里带着业务上下文（金额、姓名、主机名），不该是全局可读的。
+
+**一个必须知道的取舍**：`State.Ctx` 是 `map[string]any`，经 JSON 往返后**所有数字都变成 `float64`**。标准动作不受影响（`stdlib` 的比较统一走 `toFloat`），但一个 Go Hook 如果在恢复后写 `ctx["n"].(int)` 会 panic。要么断言 `float64`，要么别把非 JSON 原生类型放进会挂起的流程的 context 里。这条行为由 `TestNumbersComeBackAsFloat64` 钉住，不会悄悄改变。
 
 ## 6. 边缘 LLM 注入器（`llminjector`）
 
@@ -336,7 +358,8 @@ rank plugin           determinism  events   errors   LLM calls eliminated vs age
 - **真实后端**：`intentrouter` 的向量检索、`execution` 的分布式/持久化状态存储、`sandbox` 的进程隔离、`llminjector` 的真实 LLM 调用，目前都是本地内存态的最小实现，用于验证协议本身，尚未接入 Qdrant / Temporal / E2B / 任何 LLM API。
 - **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
 - **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
-- **默认 Store 不持久**：`MemoryStore` 是进程内的，重启即丢。`Store` 接口已经把边界画好（`State` 是纯值类型、不含任何引擎指针，可直接序列化），接一个文件/数据库实现不需要改引擎，但这个实现本身还没写。
+- **`filestore` 没有过期回收**：挂起的流程会一直躺在目录里。一个永远等不到审批的流程不会自己消失，也没有 TTL 或归档机制——运维得自己拿 `Pending()` 做清理。
+- **`filestore` 不做跨进程加锁**：进程内有 mutex，写是原子的（临时文件 + `rename`），所以不会读到半个文件；但两个进程同时 `Resume` 同一个指针时，两边都可能先 `Load` 成功再各自 `Delete`，"一次性"保证在多进程下会破。单进程部署没问题，多副本部署需要一个带原子取用（compare-and-delete）的后端。
 - **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
 - **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
 - **Scorecard 的 token 维度**：`scorecard` 目前度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实；但它**还没有真实的 token 消耗数**（注入器尚未接真实 LLM），也**还没有内建的 Agent 对照组跑批**——排行榜、基准套件都还是路线图,不在当前代码里。
