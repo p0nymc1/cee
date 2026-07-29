@@ -18,10 +18,19 @@ import (
 type CircuitBreakerTripped struct {
 	StepID string
 	Reason string
+
+	// Compensated lists the steps whose effects were successfully undone once
+	// this run was abandoned, and CompensationFailures the ones that could
+	// not be. A non-empty CompensationFailures is the worst outcome the engine
+	// can report: an action happened and reversing it also failed, so the
+	// world is in a state nobody chose and only a person can resolve it.
+	Compensated          []string
+	CompensationFailures []CompensationFailure
 }
 
 func (e *CircuitBreakerTripped) Error() string {
-	return fmt.Sprintf("circuit breaker tripped at step %q: %s", e.StepID, e.Reason)
+	return fmt.Sprintf("circuit breaker tripped at step %q: %s%s",
+		e.StepID, e.Reason, compensationSummary(e.Compensated, e.CompensationFailures))
 }
 
 // Default ceilings on a single Run. They exist to make a malformed DAG fail
@@ -84,6 +93,12 @@ type LeafStep struct {
 	SandboxProbeRef         string
 	CircuitBreakerPolicyRef string
 	OnSuccess               string
+
+	// CompensateStepRef names a step in the same workflow that undoes this
+	// one. When a run is abandoned, completed steps that declare a
+	// compensation are unwound in reverse order. A step that declares none is
+	// simply reported as not undoable, which is honest rather than silent.
+	CompensateStepRef string
 }
 
 func (s *LeafStep) ID() string                      { return s.StepID }
@@ -224,6 +239,10 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 	if stepID == "" {
 		stepID = workflow.EntryStepID
 	}
+
+	// Steps that ran to completion and know how to undo themselves, in
+	// execution order, so an abandoned run can be unwound in reverse.
+	var done []completed
 	var trace []string
 	steps := 0
 
@@ -258,7 +277,7 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 				next, nextCtx, breakErr := e.onFailure(s, err.Error(), ctx)
 				if breakErr != nil {
-					return entities.WorkflowResult{}, breakErr
+					return entities.WorkflowResult{}, e.abandon(workflow, done, ctx, breakErr)
 				}
 				ctx = nextCtx
 				stepID = next
@@ -290,7 +309,7 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 					e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 					next, nextCtx, breakErr := e.onFailure(s, reason, ctx)
 					if breakErr != nil {
-						return entities.WorkflowResult{}, breakErr
+						return entities.WorkflowResult{}, e.abandon(workflow, done, ctx, breakErr)
 					}
 					ctx = nextCtx
 					stepID = next
@@ -311,13 +330,16 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 				next, nextCtx, breakErr := e.onFailure(s, err.Error(), ctx)
 				if breakErr != nil {
-					return entities.WorkflowResult{}, breakErr
+					return entities.WorkflowResult{}, e.abandon(workflow, done, ctx, breakErr)
 				}
 				ctx = nextCtx
 				stepID = next
 				continue
 			}
 			ctx = merge(ctx, output)
+			if s.CompensateStepRef != "" {
+				done = append(done, completed{stepID: s.StepID, compensateStep: s.CompensateStepRef})
+			}
 			stepID = s.OnSuccess
 
 		default:

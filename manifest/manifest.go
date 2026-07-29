@@ -101,6 +101,9 @@ type StepSpec struct {
 	CircuitBreakerPolicyRef string         `json:"circuit_breaker_policy_ref,omitempty"`
 	OnSuccess               string         `json:"on_success,omitempty"`
 	SubWorkflowRef          string         `json:"sub_workflow_ref,omitempty"`
+	// CompensateWith names a step in the same workflow that undoes this one
+	// when the run is abandoned. Only meaningful on a leaf step.
+	CompensateWith string `json:"compensate_with,omitempty"`
 }
 
 // Hooks is the set of named Go functions a manifest's action_ref fields may
@@ -178,6 +181,7 @@ func buildStep(domainName, workflowID string, spec StepSpec, hooks Hooks, std st
 			SandboxProbeRef:         spec.SandboxProbeRef,
 			CircuitBreakerPolicyRef: spec.CircuitBreakerPolicyRef,
 			OnSuccess:               spec.OnSuccess,
+			CompensateStepRef:       spec.CompensateWith,
 		}, nil
 	case "composite":
 		if spec.SubWorkflowRef == "" {

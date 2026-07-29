@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/p0nymc1/cee/execution"
 	"github.com/p0nymc1/cee/stdlib"
 )
 
@@ -108,5 +109,74 @@ func TestMissingBothNamesIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(report.String(), "entry_workflow_ref") {
 		t.Fatalf("the error should ask for the current field name, got:\n%s", report.String())
+	}
+}
+
+// A dangling compensation is worse than none at all: the workflow believes the
+// step is reversible and only discovers otherwise while it is abandoning a run.
+func TestValidateCatchesADanglingCompensation(t *testing.T) {
+	bad := `{
+		"name": "broken",
+		"workflows": [{
+			"workflow_id": "broken.wf",
+			"entry_step_id": "charge",
+			"steps": [{"step_id": "charge", "type": "leaf", "action_ref": "std.set",
+			           "with": {"fields": {}}, "compensate_with": "nowhere"}]
+		}]
+	}`
+	report := Validate([]byte(bad), stdlib.Default())
+	if report.OK() {
+		t.Fatal("expected an error for a compensation that names no step")
+	}
+	if !strings.Contains(report.String(), "nowhere") {
+		t.Fatalf("the dangling target should be named, got:\n%s", report.String())
+	}
+}
+
+func TestValidateCatchesASelfReferencingCompensation(t *testing.T) {
+	bad := `{
+		"name": "broken",
+		"workflows": [{
+			"workflow_id": "broken.wf",
+			"entry_step_id": "charge",
+			"steps": [{"step_id": "charge", "type": "leaf", "action_ref": "std.set",
+			           "with": {"fields": {}}, "compensate_with": "charge"}]
+		}]
+	}`
+	if Validate([]byte(bad), stdlib.Default()).OK() {
+		t.Fatal("a step cannot undo itself")
+	}
+}
+
+func TestCompensationLoadsFromAManifest(t *testing.T) {
+	good := `{
+		"name": "travel",
+		"workflows": [{
+			"workflow_id": "travel.book",
+			"entry_step_id": "charge",
+			"steps": [
+				{"step_id": "charge", "type": "leaf", "action_ref": "std.set",
+				 "with": {"fields": {"charged": true}}, "compensate_with": "refund", "on_success": "issue"},
+				{"step_id": "issue", "type": "leaf", "action_ref": "std.require",
+				 "with": {"field": "seats", "op": "gt", "value": 0}},
+				{"step_id": "refund", "type": "leaf", "action_ref": "std.set",
+				 "with": {"fields": {"refunded": true}}}
+			]
+		}]
+	}`
+	if report := Validate([]byte(good), stdlib.Default()); !report.OK() {
+		t.Fatalf("expected a clean report, got:\n%s", report.String())
+	}
+
+	domain, err := Load([]byte(good), nil, stdlib.Default())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	charge, ok := domain.Workflows[0].Steps["charge"].(*execution.LeafStep)
+	if !ok {
+		t.Fatal("expected a leaf step")
+	}
+	if charge.CompensateStepRef != "refund" {
+		t.Fatalf("compensate_with should have been bound, got %q", charge.CompensateStepRef)
 	}
 }

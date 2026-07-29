@@ -156,6 +156,20 @@ func validateStep(report *Report, wf WorkflowSpec, s StepSpec, stepIDs, workflow
 		report.errf("%s: on_success %q is not a step in this workflow", where, s.OnSuccess)
 	}
 
+	if s.CompensateWith != "" {
+		// A dangling compensation is worse than none: the run believes the
+		// step is reversible and only finds out otherwise while abandoning.
+		if !stepIDs[s.CompensateWith] {
+			report.errf("%s: compensate_with %q is not a step in this workflow", where, s.CompensateWith)
+		}
+		if s.CompensateWith == s.StepID {
+			report.errf("%s: compensate_with points at itself", where)
+		}
+		if s.Type == "composite" {
+			report.errf("%s: only a leaf step can declare compensate_with", where)
+		}
+	}
+
 	if s.CircuitBreakerPolicyRef != "" {
 		fallback, ok := policyFallbacks[s.CircuitBreakerPolicyRef]
 		if !ok {
