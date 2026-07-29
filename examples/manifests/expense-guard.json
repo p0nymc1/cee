@@ -1,0 +1,20 @@
+{
+  "name": "expense-guard",
+  "intents": [
+    {"node_id": "expense-guard.screen", "examples": ["screen this expense", "check expense report"], "entry_step_ref": "expense-guard.screen_expense"}
+  ],
+  "policies": [
+    {"policy_id": "route_to_flag", "fallback_step_ref": "flag"}
+  ],
+  "workflows": [{
+    "workflow_id": "expense-guard.screen_expense",
+    "entry_step_id": "check_threshold",
+    "steps": [
+      {"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "amount", "op": "lte", "value": 10000},
+       "circuit_breaker_policy_ref": "route_to_flag", "on_success": "approve"},
+      {"step_id": "approve", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"approved": true}}},
+      {"step_id": "flag", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"flagged": true}}}
+    ]
+  }]
+}
