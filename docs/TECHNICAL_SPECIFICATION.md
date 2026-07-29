@@ -40,15 +40,16 @@ flowchart TB
 |---|---|---|
 | `entities` | 定义组件间交换的固定数据形状 | `IntentNode`、`MatchResult`、`ExtractionRequest/Result`、`ProbeRequest/Result`、`WorkflowResult` |
 | `intentrouter` | 意图路由层：把自然语言匹配到某个领域预注册的意图节点 | `Router`、`NewRouter`、`RegisterNode`、`Match` |
-| `execution` | 确定性执行引擎（DEE）：走 Step DAG，调用沙盒门禁、执行断路器兜底 | `Engine`、`Step`、`LeafStep`、`CompositeStep`、`Workflow`、`CircuitBreakerPolicy`、`CircuitBreakerTripped`、`Prober` |
+| `execution` | 确定性执行引擎（DEE）：走 Step DAG，调用沙盒门禁、执行断路器兜底、挂起/恢复等待外部事件的流程 | `Engine`、`Step`、`LeafStep`、`CompositeStep`、`Workflow`、`CircuitBreakerPolicy`、`CircuitBreakerTripped`、`Prober`、`Suspended`、`Store`、`MemoryStore`、`State` |
 | `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
 | `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
 | `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
 | `scorecard` | 度量一次请求：确定性步数 / LLM 调用 / 沙盒预演 / 断路器次数 / 耗时，用于跟"朴素 Agent"基线对比 | `Scorecard`、`Recorder`、`NewRecorder` |
-| `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`） |
+| `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`/`std.suspend`） |
 | `manifest` | 声明式加载器 + 静态校验器：把 JSON DAG 绑定到标准动作/Go 具名函数，并可在运行前静态校验引用完整性 | `Load`、`Validate`、`Report`、`Hooks`、`File`、`StepSpec` 等 |
-| `catalog` | 社区分发层：git-based 插件目录（index.json + manifest 文件），支持列举/整体校验/安装 | `Catalog`、`Entry`、`Load`、`Lint`、`Install` |
-| `cmd/cee` | 命令行工具：`validate` 校验单个 manifest、`lint` 校验整个 catalog、`list` 列举、`install` 拉取（均可用于 CI） | — |
+| `catalog` | 社区分发层：git-based 插件目录（index.json + manifest 文件），支持列举/整体校验/安装/基准 | `Catalog`、`Entry`、`Load`、`Lint`、`Install`、`ReadBenchmark` |
+| `bench` | 基准跑批：把一批标准事件跑过插件，聚合 Scorecard 并按确定性比率排名 | `Suite`、`Event`、`Result`、`Run`、`Leaderboard` |
+| `cmd/cee` | 命令行工具：`validate` / `lint` / `list` / `install` / `bench`（均可用于 CI） | — |
 
 ## 3. 核心实体模型（`entities` 包）
 
@@ -110,6 +111,7 @@ type WorkflowResult struct {
 2. 若当前 Step 是 `LeafStep` 且声明了 `SandboxProbeRef`，先调用 `Prober.Probe`；探针不健康则走断路器路径，**不会尝试执行真实动作**。
 3. 探针通过（或未声明探针）后执行 `Run(ctx)`；返回的 map 与当前 context 合并（浅合并，后者覆盖前者同名 key），推进到 `OnSuccess` 指向的下一个 Step。
 4. 任何失败（探针不健康 / Action 返回 error）都进入 `onFailure`：查 `CircuitBreakerPolicyRef` 指向的策略，若有 `FallbackStepRef` 则跳转过去；否则返回 `*CircuitBreakerTripped` 错误，调用方必须显式处理，**没有隐式重试**。
+5. 第三条出边：Action 返回 `*Suspended` 时既不算成功也不算失败，流程存档挂起、返回恢复指针，详见 5.5。
 
 ```mermaid
 flowchart TD
@@ -147,6 +149,43 @@ DAG 的形状写错时，5.2 的执行循环有两条路会失控。这两条都
 一个刻意的设计取舍：**这两个错误绕过断路器，直接向上冒泡**。子流程失控时不查 `CircuitBreakerPolicyRef`、不跳 fallback。因为断路器的语义是"业务动作失败了，走备用路径"，而 DAG 成环是**结构缺陷**——让 fallback 吞掉它等于把 bug 藏起来，外层还可能反复重入同一个坏掉的子流程。这条边界由 `TestRunawayIsNotSwallowedByACircuitBreaker` 锁住。
 
 上限是运行时的最后一道防线；**正常情况下这两类缺陷应该在 `cee validate` 阶段就被拦下**（见 8.4），根本走不到运行时。
+
+### 5.5 挂起与恢复：等人不是失败
+
+一个流程走到"要等外面某件事"（人工审批、回调、时间窗口）时，5.2 的两条出边都不合适：它没成功，但也**不是失败**——用断路器兜等于把"等待"当成"出错"，等待这件事就被静默丢掉了。
+
+所以有第三条出边：Action 返回 `*Suspended`。
+
+```go
+// Go 里：
+return execution.Suspend("awaiting human approval")
+```
+```json
+// 无代码 manifest 里：
+{"step_id": "hold_for_human", "type": "leaf", "action_ref": "std.suspend",
+ "with": {"reason": "awaiting manager decision"}, "on_success": "apply_decision"}
+```
+
+用 error 作为控制信号沿用的是标准库 `fs.SkipDir` 的先例：它靠类型被识别，不是故障。引擎看到它**不查断路器、不跳 fallback、不重试**，而是：
+
+1. 把当前 `ctx`、`trace`、挂起点的 `StepID` 和 `Reason` 存进 `Store`；
+2. 生成一个 `crypto/rand` 的不可猜测指针，回填到 `WorkflowResult.StatePointer`；
+3. 正常返回（`err == nil`）——挂起不是错误。
+
+`Engine.Resume(pointer, resolution)` 把外部的决定 `resolution` 合并进存下来的 ctx，**从挂起那个 Step 的 `OnSuccess` 继续**（等待已经结束，挂起点本身不重跑）。
+
+几条刻意的约束：
+
+- **指针一次性**：`Resume` 在执行前就把指针从 Store 删掉。同一个审批不能被重放两次。
+- **不配 `Store` 就报错**：没调 `SetStore` 时挂起直接返回 `*NoSuspensionSupport`，而不是退化成普通失败让断路器吞掉。
+- **`Store` 是接口**，默认 `MemoryStore`（进程内、并发安全、重启即丢）。`State` 是纯值类型、不含引擎指针，可以直接序列化——换成文件/数据库实现不动引擎，跟 `Prober` 的安排完全一致。
+- **恢复后无需新原语做分支**：`resolution` 就是普通 context 字段，下一步用 `std.require` 比一下 `approved` 即可，失败经断路器走到"驳回"分支——复用 8.3 那套机制。
+
+完整可运行范例：`examples/human_approval`（零 Go hook 的纯 L1 插件）。它的 trace 跨越挂起仍然是连续的一条：
+
+```
+[check_threshold hold_for_human apply_decision record_approved]
+```
 
 ## 6. 边缘 LLM 注入器（`llminjector`）
 
@@ -197,6 +236,7 @@ type Factory func(params map[string]any) (execution.Action, error)
 | `std.set` | 把一组固定字段写进输出，用于终态/标记步骤 | 否 |
 | `std.require` | 断言 `field op value`；**不满足则该 Step 失败** | 是——失败走断路器 |
 | `std.rule_check` | 计算 `field op value` 的布尔结果写进 `result_field` | 否，只标注不跳转 |
+| `std.suspend` | 挂起流程等待外部事件（见 5.5），需要 `reason` | 是——但既不成功也不失败，返回恢复指针 |
 
 支持的 `op`：`eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `in`。数值比较统一走 `toFloat`，所以 JSON 里的 `10000`（`float64`）和 Go 里的 `int` 能正确比较。
 
@@ -276,6 +316,18 @@ catalog/
 
 catalog 携带的是 L1(纯 manifest)插件,可被 `install` 拉下来当数据直接 `manifest.Load` 跑起来(`TestInstallAndRunFromRepoCatalog` 证明了"从 catalog 到活引擎"这条链路)。需要 Go Hook 的 L2 插件仍然走 Go module 分发;`Entry` 可以用 `tier: "L2"` 描述它以便被发现,但 `Install` 只处理它能完整校验的 manifest。
 
+### 10.4 基准跑批与排行榜(`bench` + `cee bench`)
+
+"比 Agent 高效"要变成社区势能,就得是**可攀比的榜单数字**而非断言。每个插件可以在 entry 里声明一个 `benchmark` 字段,指向一份标准事件集(`plugins/<name>/benchmark.json`:一组 `{workflow_ref, context}`)。`cee bench` 把每个插件的事件批量跑过一个挂了 `scorecard.Recorder` 的引擎,聚合成一份 `bench.Result`,再按确定性比率排名输出:
+
+```
+rank plugin           determinism  events   errors   LLM calls eliminated vs agent
+1    access-review    100%         4        0        8 of 8
+2    sla-guard        100%         4        0        8 of 8
+```
+
+排名口径复用 9.2 的诚实基线:聚合确定性比率 = 相比"每步一次 LLM 调用"的 Agent 所消除的调用比例。单个事件出错(如断路器无 fallback)只计入 `Errors` 并继续,一个坏事件不会掩盖整批数字(`bench.Run` 保证)。这是把 Scorecard 从"单次度量"变成"跨插件、可排序、可炫耀"的社会化机制的第一步——托管式排行榜、真实 token 维度、Agent 实跑对照组都还在路线图上。
+
 ## 11. 当前范围与已知限制
 
 以下内容**尚未实现**，属于路线图但不在当前代码里，避免与实际状态混淆：
@@ -283,7 +335,8 @@ catalog 携带的是 L1(纯 manifest)插件,可被 `install` 拉下来当数据�
 - **Agent 兜底层**：此前讨论过"LLM 抽取连续失败后转受限 Agent 兜底"的两级升级机制，已明确决定不做，当前抽取失败直接由调用方决定下一步（通常是转人工），引擎本身不内置这一层。
 - **真实后端**：`intentrouter` 的向量检索、`execution` 的分布式/持久化状态存储、`sandbox` 的进程隔离、`llminjector` 的真实 LLM 调用，目前都是本地内存态的最小实现，用于验证协议本身，尚未接入 Qdrant / Temporal / E2B / 任何 LLM API。
 - **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
-- **状态持久化**：`WorkflowResult.StatePointer` 字段已定义，但目前只是回填 `workflowRef` 字符串，没有真正对接外部存储或支持"从指针恢复执行"。
+- **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
+- **默认 Store 不持久**：`MemoryStore` 是进程内的，重启即丢。`Store` 接口已经把边界画好（`State` 是纯值类型、不含任何引擎指针，可直接序列化），接一个文件/数据库实现不需要改引擎，但这个实现本身还没写。
 - **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
 - **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
 - **Scorecard 的 token 维度**：`scorecard` 目前度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实；但它**还没有真实的 token 消耗数**（注入器尚未接真实 LLM），也**还没有内建的 Agent 对照组跑批**——排行榜、基准套件都还是路线图,不在当前代码里。

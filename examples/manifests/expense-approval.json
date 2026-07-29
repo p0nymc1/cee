@@ -1,0 +1,36 @@
+{
+  "name": "expense-approval",
+  "intents": [
+    {"node_id": "expense-approval.review", "examples": ["review this expense claim", "approve expense report"], "entry_step_ref": "expense-approval.review"}
+  ],
+  "policies": [
+    {"policy_id": "escalate_to_human", "fallback_step_ref": "hold_for_human"},
+    {"policy_id": "record_rejection", "fallback_step_ref": "record_rejected"}
+  ],
+  "workflows": [{
+    "workflow_id": "expense-approval.review",
+    "entry_step_id": "check_threshold",
+    "steps": [
+      {"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "amount", "op": "lte", "value": 1000},
+       "circuit_breaker_policy_ref": "escalate_to_human", "on_success": "record_auto_approved"},
+
+      {"step_id": "record_auto_approved", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"outcome": "auto-approved"}}},
+
+      {"step_id": "hold_for_human", "type": "leaf", "action_ref": "std.suspend",
+       "with": {"reason": "amount exceeds the auto-approval threshold; awaiting manager decision"},
+       "on_success": "apply_decision"},
+
+      {"step_id": "apply_decision", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "approved", "op": "eq", "value": true},
+       "circuit_breaker_policy_ref": "record_rejection", "on_success": "record_approved"},
+
+      {"step_id": "record_approved", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"outcome": "approved by manager"}}},
+
+      {"step_id": "record_rejected", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"outcome": "rejected by manager"}}}
+    ]
+  }]
+}

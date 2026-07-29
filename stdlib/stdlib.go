@@ -33,7 +33,27 @@ func Default() Library {
 		"std.set":        setFactory,
 		"std.require":    requireFactory,
 		"std.rule_check": ruleCheckFactory,
+		"std.suspend":    suspendFactory,
 	}
+}
+
+// suspendFactory parks the run pending something outside the engine -- a
+// human decision, a callback, a scheduled window. The engine saves the
+// context and returns a resume pointer; whatever the external event decides
+// is merged into context on resume, so the step after this one can branch on
+// it with std.require like any other field. This is what lets a no-code
+// manifest express "hold this for a human" without writing Go.
+//
+//	{"action_ref": "std.suspend", "with": {"reason": "awaiting human approval"},
+//	 "on_success": "apply_decision"}
+func suspendFactory(params map[string]any) (execution.Action, error) {
+	reason, ok := params["reason"].(string)
+	if !ok || reason == "" {
+		return nil, fmt.Errorf("std.suspend requires a non-empty 'reason' string")
+	}
+	return func(ctx map[string]any) (map[string]any, error) {
+		return execution.Suspend(reason)
+	}, nil
 }
 
 // setFactory writes a fixed set of fields into the step's output. Use it for

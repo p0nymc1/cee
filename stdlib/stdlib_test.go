@@ -1,6 +1,11 @@
 package stdlib
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"cee/execution"
+)
 
 func TestSetWritesFields(t *testing.T) {
 	action, err := Default()["std.set"](map[string]any{"fields": map[string]any{"flagged": true}})
@@ -75,5 +80,31 @@ func TestInOperator(t *testing.T) {
 	}
 	if _, err := action(map[string]any{"status": "closed"}); err == nil {
 		t.Fatalf("expected 'closed' to be rejected")
+	}
+}
+
+func TestSuspendRequiresAReason(t *testing.T) {
+	if _, err := Default()["std.suspend"](map[string]any{}); err == nil {
+		t.Fatal("expected an error when 'reason' is missing")
+	}
+	if _, err := Default()["std.suspend"](map[string]any{"reason": ""}); err == nil {
+		t.Fatal("expected an error when 'reason' is empty")
+	}
+}
+
+func TestSuspendReturnsASuspension(t *testing.T) {
+	action, err := Default()["std.suspend"](map[string]any{"reason": "awaiting human approval"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = action(map[string]any{})
+
+	var suspended *execution.Suspended
+	if !errors.As(err, &suspended) {
+		t.Fatalf("expected *execution.Suspended, got %v", err)
+	}
+	if suspended.Reason != "awaiting human approval" {
+		t.Fatalf("the reason must reach the operator, got %q", suspended.Reason)
 	}
 }

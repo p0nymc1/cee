@@ -145,8 +145,16 @@ type Engine struct {
 	observer  Observer
 	workflows map[string]*Workflow
 	policies  map[string]CircuitBreakerPolicy
+	store     Store
 	maxSteps  int
 	maxDepth  int
+}
+
+// SetStore attaches the Store that suspended runs are parked in. Without
+// one, a step that suspends fails loudly rather than silently behaving like
+// an ordinary failure. Use NewMemoryStore for development.
+func (e *Engine) SetStore(s Store) {
+	e.store = s
 }
 
 // NewEngine builds an Engine. sandbox may be nil as long as no registered
@@ -196,6 +204,13 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 // run is Run plus the current sub-workflow nesting depth. Steps are counted
 // per workflow, depth across them.
 func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
+	return e.runFrom(workflowRef, "", ctx, depth)
+}
+
+// runFrom walks a workflow starting at startStepID, or at the workflow's
+// declared entry step when startStepID is empty. Resume uses the explicit
+// form to re-enter a DAG partway through.
+func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
 	if depth > e.maxDepth {
 		return entities.WorkflowResult{}, &DepthLimitExceeded{WorkflowID: workflowRef, Limit: e.maxDepth}
 	}
@@ -205,7 +220,10 @@ func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entitie
 		return entities.WorkflowResult{}, fmt.Errorf("no workflow registered for %q", workflowRef)
 	}
 
-	stepID := workflow.EntryStepID
+	stepID := startStepID
+	if stepID == "" {
+		stepID = workflow.EntryStepID
+	}
 	var trace []string
 	steps := 0
 
@@ -229,12 +247,12 @@ func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entitie
 		case *CompositeStep:
 			subResult, err := e.run(s.SubWorkflowRef, ctx, depth+1)
 			if err != nil {
-				// A runaway sub-workflow is a defect in the DAG's shape, not
-				// a business failure the breaker exists to absorb. Letting a
-				// fallback swallow it would hide the bug and let the outer
-				// loop re-enter the same broken sub-workflow, so it goes
-				// straight up instead.
-				if isRunaway(err) {
+				// A runaway or misconfigured sub-workflow is a defect in the
+				// DAG's shape, not a business failure the breaker exists to
+				// absorb. Letting a fallback swallow it would hide the bug
+				// and let the outer loop re-enter the same broken
+				// sub-workflow, so it goes straight up instead.
+				if bypassesBreaker(err) {
 					return entities.WorkflowResult{}, err
 				}
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
@@ -281,6 +299,13 @@ func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entitie
 			e.observe(func(o Observer) { o.ObserveStep(workflow.WorkflowID, s.StepID) })
 			output, err := s.Run(ctx)
 			if err != nil {
+				// A suspension is a pause, not a fault: it must reach the
+				// caller with a resume pointer rather than be absorbed by a
+				// breaker as though the step had failed.
+				var suspended *Suspended
+				if errors.As(err, &suspended) {
+					return e.suspend(workflow, s.StepID, suspended, ctx, trace, depth)
+				}
 				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 				next, breakErr := e.onFailure(s, err.Error())
 				if breakErr != nil {
@@ -300,6 +325,92 @@ func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entitie
 	return entities.WorkflowResult{Output: ctx, StatePointer: workflowRef, Trace: trace}, nil
 }
 
+// suspend parks a run: it saves the context at the suspension point and
+// reports the pointer to resume from. The returned WorkflowResult carries
+// the context accumulated so far, so a caller can act on partial output
+// (for instance, tell an operator what is awaiting their decision) without
+// loading the state back.
+func (e *Engine) suspend(
+	workflow *Workflow, stepID string, s *Suspended,
+	ctx map[string]any, trace []string, depth int,
+) (entities.WorkflowResult, error) {
+	if depth > 0 {
+		return entities.WorkflowResult{}, &NestedSuspensionUnsupported{
+			WorkflowID: workflow.WorkflowID, StepID: stepID,
+		}
+	}
+	if e.store == nil {
+		return entities.WorkflowResult{}, &NoSuspensionSupport{
+			WorkflowID: workflow.WorkflowID, StepID: stepID,
+		}
+	}
+
+	pointer, err := newPointer()
+	if err != nil {
+		return entities.WorkflowResult{}, err
+	}
+	state := State{
+		Pointer:    pointer,
+		WorkflowID: workflow.WorkflowID,
+		StepID:     stepID,
+		Reason:     s.Reason,
+		Ctx:        ctx,
+		Trace:      trace,
+	}
+	if err := e.store.Save(state); err != nil {
+		return entities.WorkflowResult{}, fmt.Errorf("could not save suspended workflow: %w", err)
+	}
+
+	if so, ok := e.observer.(SuspensionObserver); ok {
+		so.ObserveSuspension(workflow.WorkflowID, stepID)
+	}
+	return entities.WorkflowResult{Output: ctx, StatePointer: pointer, Trace: trace}, nil
+}
+
+// Resume continues a suspended run from the pointer Run reported. resolution
+// carries whatever the external event decided (an approval, a callback
+// payload) and is merged into the saved context, so the step after the
+// suspension point can branch on it like any other context field.
+//
+// Execution restarts at the suspended step's OnSuccess: waiting is over, so
+// the suspension point itself does not run again. A pointer is single-use --
+// it is deleted once resumed, so the same decision cannot be replayed.
+func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.WorkflowResult, error) {
+	if e.store == nil {
+		return entities.WorkflowResult{}, fmt.Errorf("no Store is configured; call Engine.SetStore first")
+	}
+	state, err := e.store.Load(pointer)
+	if err != nil {
+		return entities.WorkflowResult{}, err
+	}
+
+	workflow, ok := e.workflows[state.WorkflowID]
+	if !ok {
+		return entities.WorkflowResult{}, fmt.Errorf(
+			"suspended workflow %q is no longer registered", state.WorkflowID)
+	}
+	step, ok := workflow.Steps[state.StepID]
+	if !ok {
+		return entities.WorkflowResult{}, fmt.Errorf(
+			"workflow %q no longer has the suspended step %q", state.WorkflowID, state.StepID)
+	}
+	leaf, ok := step.(*LeafStep)
+	if !ok {
+		return entities.WorkflowResult{}, fmt.Errorf(
+			"suspended step %q is no longer a leaf step", state.StepID)
+	}
+
+	// Consume the pointer before running: a resume that fails partway must
+	// not leave a token that could apply the same decision twice.
+	if err := e.store.Delete(pointer); err != nil {
+		return entities.WorkflowResult{}, fmt.Errorf("could not consume resume pointer: %w", err)
+	}
+
+	result, err := e.runFrom(state.WorkflowID, leaf.OnSuccess, merge(state.Ctx, resolution), 0)
+	result.Trace = append(append([]string{}, state.Trace...), result.Trace...)
+	return result, err
+}
+
 // observe invokes fn with the attached observer, if any. Keeping the nil
 // check in one place lets the Run loop stay readable.
 func (e *Engine) observe(fn func(Observer)) {
@@ -317,12 +428,19 @@ func (e *Engine) onFailure(step Step, reason string) (string, error) {
 	return "", &CircuitBreakerTripped{StepID: step.ID(), Reason: reason}
 }
 
-// isRunaway reports whether err is one of the structural ceilings, which
-// bypass circuit breakers entirely.
-func isRunaway(err error) bool {
+// bypassesBreaker reports whether err describes a defect in how the
+// workflow is built rather than a business action that failed. A circuit
+// breaker exists to absorb the latter; absorbing the former would convert a
+// misconfiguration into a silent fallback and hide it from the author.
+func bypassesBreaker(err error) bool {
 	var stepLimit *StepLimitExceeded
 	var depthLimit *DepthLimitExceeded
-	return errors.As(err, &stepLimit) || errors.As(err, &depthLimit)
+	var nested *NestedSuspensionUnsupported
+	var noStore *NoSuspensionSupport
+	return errors.As(err, &stepLimit) ||
+		errors.As(err, &depthLimit) ||
+		errors.As(err, &nested) ||
+		errors.As(err, &noStore)
 }
 
 // tail returns at most the last n elements of s.
