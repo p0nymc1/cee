@@ -156,13 +156,14 @@ type Observer interface {
 // probing and circuit-breaking are the only two ways a step's forward
 // progress can be redirected.
 type Engine struct {
-	sandbox   Prober
-	observer  Observer
-	workflows map[string]*Workflow
-	policies  map[string]CircuitBreakerPolicy
-	store     Store
-	maxSteps  int
-	maxDepth  int
+	sandbox    Prober
+	observer   Observer
+	workflows  map[string]*Workflow
+	policies   map[string]CircuitBreakerPolicy
+	store      Store
+	authorizer Authorizer
+	maxSteps   int
+	maxDepth   int
 }
 
 // SetStore attaches the Store that suspended runs are parked in. Without
@@ -385,6 +386,7 @@ func (e *Engine) suspend(
 		WorkflowID: workflow.WorkflowID,
 		StepID:     stepID,
 		Reason:     s.Reason,
+		Audience:   s.Audience,
 		Ctx:        ctx,
 		Trace:      trace,
 	}
@@ -407,6 +409,17 @@ func (e *Engine) suspend(
 // the suspension point itself does not run again. A pointer is single-use --
 // it is deleted once resumed, so the same decision cannot be replayed.
 func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.WorkflowResult, error) {
+	return e.ResumeAs(pointer, "", resolution)
+}
+
+// ResumeAs is Resume carrying the identity of whoever is answering.
+//
+// The engine does not authenticate the identity -- proving it belongs to the
+// service in front of the engine, and treating an unverified string as proof
+// here would be worse than not asking at all. What the engine guarantees is
+// that a suspension declaring an audience is not resumed without the domain's
+// Authorizer agreeing, and that whoever answered is recorded in the run.
+func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (entities.WorkflowResult, error) {
 	if e.store == nil {
 		return entities.WorkflowResult{}, fmt.Errorf("no Store is configured; call Engine.SetStore first")
 	}
@@ -431,6 +444,14 @@ func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.Wor
 			"suspended step %q is no longer a leaf step", state.StepID)
 	}
 
+	// Rule on the caller before the pointer is claimed. A refusal must leave
+	// the approval pending for whoever may actually give it -- consuming it
+	// here would let anyone holding a link destroy a pending decision simply
+	// by being unauthorised.
+	if err := e.authorize(state, identity); err != nil {
+		return entities.WorkflowResult{}, err
+	}
+
 	// Claim the pointer before running. This is one atomic step rather than
 	// a load-then-delete pair, so when several processes resume the same
 	// pointer at once exactly one gets past here -- the losers see the
@@ -442,7 +463,12 @@ func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.Wor
 		return entities.WorkflowResult{}, fmt.Errorf("could not claim resume pointer: %w", err)
 	}
 
-	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, merge(claimed.Ctx, resolution), 0)
+	// A decision needs an author in the record, not just an outcome.
+	resumeCtx := merge(claimed.Ctx, resolution)
+	if identity != "" {
+		resumeCtx[ResumedByKey] = identity
+	}
+	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, resumeCtx, 0)
 
 	// Release on every path out, success or failure alike: either way the
 	// decision has been acted on, and a claim left behind would later read as

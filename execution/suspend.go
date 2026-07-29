@@ -20,6 +20,13 @@ type Suspended struct {
 	// recorded in the saved state so an operator listing pending runs can
 	// see why each one is parked.
 	Reason string
+
+	// Audience optionally names who may answer this suspension -- a role, a
+	// team, a queue. It is opaque to the engine, which only passes it to the
+	// domain's Authorizer. Leaving it empty means anyone holding the pointer
+	// may resume, which is the right default for a workflow whose pointer
+	// never leaves the process, and the wrong one the moment it does.
+	Audience string
 }
 
 func (s *Suspended) Error() string {
@@ -29,6 +36,12 @@ func (s *Suspended) Error() string {
 // Suspend is shorthand for returning a suspension from an Action.
 func Suspend(reason string) (map[string]any, error) {
 	return nil, &Suspended{Reason: reason}
+}
+
+// SuspendFor is Suspend with an audience: only identities the domain's
+// Authorizer accepts for that audience may resume the run.
+func SuspendFor(reason, audience string) (map[string]any, error) {
+	return nil, &Suspended{Reason: reason, Audience: audience}
 }
 
 // SuspensionObserver is an optional extension of Observer. An Observer that
@@ -50,8 +63,11 @@ type State struct {
 	// once the external event it waited on has arrived.
 	StepID string
 	Reason string
-	Ctx    map[string]any
-	Trace  []string
+	// Audience is carried from the Suspended that created this state, so the
+	// rule about who may answer survives a restart along with the run.
+	Audience string
+	Ctx      map[string]any
+	Trace    []string
 }
 
 // Store is where suspended runs live between Run and Resume. The default is

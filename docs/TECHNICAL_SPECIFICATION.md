@@ -231,6 +231,34 @@ return execution.Suspend("awaiting human approval")
 [check_threshold hold_for_human apply_decision record_approved]
 ```
 
+### 5.5.1 谁可以恢复：把无记名凭证关掉
+
+恢复指针是 `crypto/rand` 生成的，不可猜测——这挡住了"有人找到它"。它挡不住**有人合法地拿到它**：转发的邮件、粘进群里的链接、日志里的一行。持有即可批准，引擎既没法过问，也没法记录是谁批的。
+
+因此挂起可以声明一个 **audience**——一个领域自定义的、表示"谁有权回答"的不透明名字：
+
+```go
+return execution.SuspendFor("金额超限，需经理批准", "finance-manager")
+```
+```json
+{"action_ref": "std.suspend",
+ "with": {"reason": "金额超限", "audience": "finance-manager"}}
+```
+
+引擎**从不解释** audience，只把它连同调用方声称的身份交给领域提供的 `Authorizer`——跟它把探针请求交给 `Prober` 是同一种安排。恢复时用 `ResumeAs(pointer, identity, resolution)`。
+
+三条让它有意义而不是装饰的规则：
+
+- **默认拒绝**。声明了 audience 的挂起，在没有配置 `Authorizer` 的引擎上**一律拒绝**。静默放行会让这条声明退化成注释。由 `TestAnAudiencedSuspensionFailsClosedWithNoAuthorizer` 锁住。
+- **拒绝不消耗指针**。否则任何拿到链接的人只要"没有权限"就能把一笔待批准销毁掉——**访问控制会变成拒绝服务**。授权检查因此排在 `Consume` 之前。由 `TestARefusalDoesNotConsumeThePointer` 锁住。
+- **授权器报错等于拒绝**。连不上目录服务的授权器**没有说"是"**，而且待批准必须留着。
+
+批准者身份写进恢复后的 context（`cee.resumed_by`）——**一个决定需要有作者，而不只有结果**。
+
+引擎**不认证**这个身份：证明"你是谁"属于引擎前面那层服务，在这里把一个未经验证的字符串当成凭据，比不问更糟。引擎保证的是：声明了 audience 的挂起，不经领域授权器点头不会被恢复，且答复者被记录在案。
+
+没有声明 audience 的工作流行为完全不变。
+
 ### 5.6 落盘的 Store（`filestore`）
 
 `MemoryStore` 重启即丢，而"等人工审批"天然跨小时甚至跨天——一个重启就丢光待审批队列的审批流实际上没法用。`filestore.Store` 把每个挂起的流程按恢复指针存成一个 JSON 文件：

@@ -178,6 +178,7 @@ CLI 只打印、不存盘：草稿是提案，把模型挪到设计时的全部�
 | 无代码（L1）标准动作库 | `stdlib`（`std.set`/`require`/`rule_check`/`suspend`/`require_verified`）|
 | 挂起/恢复 + 落盘 Store | `execution` + `filestore` |
 | 补偿（saga） | `execution/compensate.go` |
+| 恢复授权（audience + Authorizer） | `execution/authorize.go` |
 | 来源标记与验证门禁 | `entities.ModelDerived` + `std.require_verified` |
 | 重放与回归 diff | `replay` |
 | 模型起草工作流 | `draft` / `cee draft` |
@@ -191,7 +192,7 @@ CLI 只打印、不存盘：草稿是提案，把模型挪到设计时的全部�
 ### 4.2 尚未完成（按优先级）
 
 1. **服务形态**：CEE 目前是库，不是服务。要 HTTP API 需自行封装。
-2. **恢复指针的权限模型**：`StatePointer` 是无记名凭证，谁拿到谁能批准，引擎侧无认证授权。**这是做 HTTP 层之前必须先解决的前置问题。**
+2. **服务层的身份认证**：引擎侧的授权已就位（挂起可声明 audience，由领域 `Authorizer` 裁决，默认拒绝，拒绝不消耗指针，批准者记入 `cee.resumed_by`），但**证明"调用方是谁"属于引擎前面那层服务**，那层还不存在。
 3. **起草链路的真实模型验证**：`draft` 的逻辑与四道闸门已全部测试（用桩，不联网），但"模型第一次能不能写对"尚未用真实端点实测。
 4. **可视化编排**：`cee draft` 已提供自然语言入口，拖拽界面仍缺；底层是纯 JSON 且可静态校验，前端可后补。
 5. **并行与汇合**：引擎目前无 fan-out/fan-in 原语。

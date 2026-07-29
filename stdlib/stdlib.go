@@ -49,13 +49,26 @@ func Default() Library {
 //
 //	{"action_ref": "std.suspend", "with": {"reason": "awaiting human approval"},
 //	 "on_success": "apply_decision"}
+//
+// An optional "audience" names who may answer it, enforced by the domain's
+// execution.Authorizer:
+//
+//	{"action_ref": "std.suspend",
+//	 "with": {"reason": "over the limit", "audience": "finance-manager"}}
 func suspendFactory(params map[string]any) (execution.Action, error) {
 	reason, ok := params["reason"].(string)
 	if !ok || reason == "" {
 		return nil, fmt.Errorf("std.suspend requires a non-empty 'reason' string")
 	}
+	// audience is optional. When set, only identities the domain's Authorizer
+	// accepts may resume -- without it, anyone holding the pointer can.
+	audience, _ := params["audience"].(string)
+
 	return func(ctx map[string]any) (map[string]any, error) {
-		return execution.Suspend(reason)
+		if audience == "" {
+			return execution.Suspend(reason)
+		}
+		return execution.SuspendFor(reason, audience)
 	}, nil
 }
 

@@ -176,3 +176,35 @@ func TestRequireVerifiedSurvivesAJSONRoundTrip(t *testing.T) {
 		t.Fatal("provenance must still be honoured after a JSON round trip")
 	}
 }
+
+func TestSuspendCarriesAnOptionalAudience(t *testing.T) {
+	action, err := Default()["std.suspend"](map[string]any{
+		"reason": "over the limit", "audience": "finance-manager",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = action(map[string]any{})
+
+	var suspended *execution.Suspended
+	if !errors.As(err, &suspended) {
+		t.Fatalf("expected a suspension, got %v", err)
+	}
+	if suspended.Audience != "finance-manager" {
+		t.Fatalf("the audience must reach the engine, got %q", suspended.Audience)
+	}
+}
+
+// Omitting it keeps the old behaviour: anyone holding the pointer may resume.
+func TestSuspendWithoutAudienceStaysOpen(t *testing.T) {
+	action, _ := Default()["std.suspend"](map[string]any{"reason": "waiting"})
+	_, err := action(map[string]any{})
+
+	var suspended *execution.Suspended
+	if !errors.As(err, &suspended) {
+		t.Fatalf("expected a suspension, got %v", err)
+	}
+	if suspended.Audience != "" {
+		t.Fatalf("no audience should be declared, got %q", suspended.Audience)
+	}
+}
