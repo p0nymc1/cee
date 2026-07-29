@@ -9,16 +9,16 @@ import (
 func newTestRouter() *Router {
 	r := NewRouter(0.5)
 	r.RegisterNode(entities.IntentNode{
-		NodeID:       "finance.duplicate_expense",
-		DomainID:     "finance",
-		Examples:     []string{"duplicate expense report", "same receipt submitted twice"},
-		EntryStepRef: "finance.flag",
+		NodeID:           "finance.duplicate_expense",
+		DomainID:         "finance",
+		Examples:         []string{"duplicate expense report", "same receipt submitted twice"},
+		EntryWorkflowRef: "finance.flag",
 	})
 	r.RegisterNode(entities.IntentNode{
-		NodeID:       "security.suspicious_login",
-		DomainID:     "security",
-		Examples:     []string{"suspicious login from unusual location", "failed login attempts spike"},
-		EntryStepRef: "security.contain",
+		NodeID:           "security.suspicious_login",
+		DomainID:         "security",
+		Examples:         []string{"suspicious login from unusual location", "failed login attempts spike"},
+		EntryWorkflowRef: "security.contain",
 	})
 	return r
 }
@@ -29,8 +29,8 @@ func TestMatchWithinDomain(t *testing.T) {
 	if !result.Matched {
 		t.Fatalf("expected a match, got %+v", result)
 	}
-	if result.EntryStepRef != "finance.flag" {
-		t.Fatalf("unexpected entry step ref: %s", result.EntryStepRef)
+	if result.EntryWorkflowRef != "finance.flag" {
+		t.Fatalf("unexpected entry step ref: %s", result.EntryWorkflowRef)
 	}
 }
 

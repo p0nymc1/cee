@@ -40,9 +40,40 @@ type File struct {
 // IntentSpec declares one matchable intent, scoped to this manifest's
 // domain.
 type IntentSpec struct {
-	NodeID       string   `json:"node_id"`
-	Examples     []string `json:"examples"`
-	EntryStepRef string   `json:"entry_step_ref"`
+	NodeID   string   `json:"node_id"`
+	Examples []string `json:"examples"`
+	// EntryWorkflowRef names the workflow this intent enters. It is a
+	// workflow_id, never a step_id.
+	EntryWorkflowRef string `json:"entry_workflow_ref,omitempty"`
+
+	// DeprecatedEntryStepRef is the field's original name, kept because
+	// rule 3 of the normative handbook forbids removing a published JSON
+	// field -- manifests already in the catalog use it. It always meant the
+	// entry *workflow*; the name was wrong, not the semantics. Load and
+	// Validate accept it and report it as deprecated. Do not use it in new
+	// manifests.
+	DeprecatedEntryStepRef string `json:"entry_step_ref,omitempty"`
+}
+
+// entryWorkflow resolves the intent's target workflow, preferring the
+// current field name over the deprecated one. Both carry the same meaning,
+// so a manifest setting either works; conflictingEntry reports the one case
+// that cannot be resolved silently.
+func (s IntentSpec) entryWorkflow() string {
+	if s.EntryWorkflowRef != "" {
+		return s.EntryWorkflowRef
+	}
+	return s.DeprecatedEntryStepRef
+}
+
+// conflictingEntry reports whether both names are set to different values.
+// Guessing which one the author meant is exactly the kind of silent
+// default rule 3 of the handbook rules out, so callers turn this into an
+// error instead.
+func (s IntentSpec) conflictingEntry() bool {
+	return s.EntryWorkflowRef != "" &&
+		s.DeprecatedEntryStepRef != "" &&
+		s.EntryWorkflowRef != s.DeprecatedEntryStepRef
 }
 
 // PolicySpec declares one named circuit breaker fallback.
@@ -94,11 +125,17 @@ func Load(data []byte, hooks Hooks, std stdlib.Library) (*registry.Domain, error
 	domain := &registry.Domain{Name: file.Name}
 
 	for _, intent := range file.Intents {
+		if intent.conflictingEntry() {
+			return nil, fmt.Errorf(
+				"manifest: domain %q intent %q sets both entry_workflow_ref (%q) and the deprecated entry_step_ref (%q) to different values; keep one",
+				file.Name, intent.NodeID, intent.EntryWorkflowRef, intent.DeprecatedEntryStepRef,
+			)
+		}
 		domain.Intents = append(domain.Intents, entities.IntentNode{
-			NodeID:       intent.NodeID,
-			DomainID:     file.Name,
-			Examples:     intent.Examples,
-			EntryStepRef: intent.EntryStepRef,
+			NodeID:           intent.NodeID,
+			DomainID:         file.Name,
+			Examples:         intent.Examples,
+			EntryWorkflowRef: intent.entryWorkflow(),
 		})
 	}
 

@@ -27,7 +27,10 @@ cee/
   registry/       领域注册表（把插件接入 Router + Engine）
   manifest/       JSON 声明式加载器（Load 出 registry.Domain）+ 静态校验器（Validate）
   stdlib/         标准动作库（std.set / std.require / std.rule_check）
-  cmd/cee/        命令行工具：cee validate <manifest.json>
+  scorecard/      度量一次请求：确定性步数 / LLM 调用 / 沙盒 / 断路器 / 耗时
+  catalog/        社区分发层：index.json + plugins/<name>/manifest.json (+ benchmark.json)
+  bench/          基准跑批：把标准事件跑过插件，聚合 Scorecard 并排名
+  cmd/cee/        命令行工具：validate / lint / list / install / bench
   docs/           本文档所在目录
   examples/
     security_monitoring/   L2 范例：Go 插件 + 沙盒门禁 + 断路器降级人工审批
@@ -45,6 +48,8 @@ registry  ←  manifest
 stdlib    ←  manifest
 manifest, stdlib  ←  cmd/cee
 ```
+
+`scorecard` 是叶子包：它不 import 任何其他 cee 包，而是靠方法集结构化地满足 `execution.Observer` 和 `llminjector.Observer` 两个接口，所以埋点不会造成 `scorecard → execution` 的反向依赖。
 
 ## 3. 快速开始：从零跑通一个领域
 
@@ -73,7 +78,7 @@ func main() {
             NodeID:       "finance.duplicate_expense",
             DomainID:     "finance",
             Examples:     []string{"duplicate expense report"},
-            EntryStepRef: "finance.flag_duplicate", // 指向下面某个 Workflow 的 WorkflowID
+            EntryWorkflowRef: "finance.flag_duplicate", // 指向下面某个 Workflow 的 WorkflowID
         }},
         Workflows: []*execution.Workflow{{
             WorkflowID:  "finance.flag_duplicate",
@@ -91,7 +96,7 @@ func main() {
 
     match := router.Match("finance", "duplicate expense report submitted again")
     if match.Matched {
-        result, _ := engine.Run(match.EntryStepRef, map[string]any{})
+        result, _ := engine.Run(match.EntryWorkflowRef, map[string]any{})
         _ = result // result.Output["flagged"] == true
     }
 }
@@ -105,7 +110,7 @@ func main() {
 {
   "name": "finance",
   "intents": [
-    {"node_id": "finance.duplicate_expense", "examples": ["duplicate expense report"], "entry_step_ref": "finance.flag_duplicate"}
+    {"node_id": "finance.duplicate_expense", "examples": ["duplicate expense report"], "entry_workflow_ref": "finance.flag_duplicate"}
   ],
   "policies": [
     {"policy_id": "escalate_to_review", "fallback_step_ref": "human_review"}
@@ -164,7 +169,27 @@ go run ./cmd/cee validate examples/manifests/expense-guard.json
 # [error] ...           -> exit 1（可直接用于 CI 门禁）
 ```
 
-它会抓出：悬空的 `on_success`/`sub_workflow_ref`/`entry_step_ref`、引用了未声明的 `circuit_breaker_policy_ref`、断路器 fallback 指向不存在的 step、标准动作参数写错、重复 step_id 等。
+它会抓出：悬空的 `on_success`/`sub_workflow_ref`/`entry_workflow_ref`、引用了未声明的 `circuit_breaker_policy_ref`、断路器 fallback 指向不存在的 step、标准动作参数写错、重复 step_id、以及会让 `Engine.Run` 失控的 `on_success` 环 / `sub_workflow_ref` 环等。
+
+### 把插件发布到 catalog（社区分发）
+
+`catalog/` 是一个 git-based 的插件目录——`index.json` 加它指向的 manifest 文件，贡献一个 L1 插件就是一个 PR：
+
+```bash
+go run ./cmd/cee list             # 列出 catalog 里的插件
+go run ./cmd/cee lint             # 校验整个 catalog（CI 门禁；exit 1 = 有问题）
+go run ./cmd/cee install sla-guard # 校验通过后把 manifest 拉进 ./plugins/
+```
+
+发布步骤：在 `catalog/plugins/<name>/manifest.json` 放你的 manifest，在 `catalog/index.json` 加一条 entry（`name`/`tier`/`version`/`domain`/`manifest` 路径），跑 `cee lint` 确认干净即可提 PR。`install` 是**先校验再落盘**——过不了 `cee validate` 的插件不会被装上。需要 Go Hook 的 L2 插件走 Go module 分发，不通过 catalog 的 `install`（但可以在 index 里用 `tier: "L2"` 登记以便被发现）。
+
+想上排行榜：再加一个 `benchmark` 字段指向 `plugins/<name>/benchmark.json`（一组 `{workflow_ref, context}` 标准事件），然后：
+
+```bash
+go run ./cmd/cee bench             # 跑所有带 benchmark 的插件，按确定性比率排名
+```
+
+排名口径是"相比每步一次 LLM 的 Agent 消除了多少调用"，这就是让贡献者为了一个可炫耀的数字去优化流程的社会化机制。
 
 `action_ref` 在 `hooks` 里找不到、`type` 既不是 `"leaf"` 也不是 `"composite"`、`composite` 缺 `sub_workflow_ref`——这三类错误 `Load` 都会返回带上下文（域名/workflow名/step名）的 `error`，方便定位是哪个 manifest 的哪个 step 写错了。
 
@@ -208,15 +233,34 @@ if result.Success {
 }
 ```
 
+## 5b. 如何度量一次请求（Scorecard）
+
+`scorecard.Recorder` 是 per-request 的：每次请求 new 一个,attach 到引擎(和注入器),跑完 `Snapshot`。引擎默认不带 observer,零开销;只有 attach 后才回调。
+
+```go
+recorder := scorecard.NewRecorder()
+engine.SetObserver(recorder)          // 引擎侧:步数/沙盒/断路器
+injector.SetObserver(recorder)         // 注入器侧:LLM 抽取次数(有 LLM 环节时才需要)
+
+result, _ := engine.Run(entryRef, ctx)
+
+card := recorder.Snapshot(entryRef)
+fmt.Println(card)                       // determinism 100% (2 deterministic steps, 0 LLM calls)...
+_ = card.DeterminismRatio()             // 0.0~1.0,= 相比"每步一次 LLM"的 Agent 省掉的调用比例
+```
+
+被计数的是**实际执行**:被沙盒拦下、动作没跑成的 Step 不算确定性步数(算沙盒预演 + 断路器)。`examples/security_monitoring` 里有完整用法。
+
 ## 6. 各包 API 速查
 
 | 包 | 构造函数 | 关键方法 |
 |---|---|---|
 | `intentrouter` | `NewRouter(threshold float64) *Router` | `RegisterNode(entities.IntentNode)`、`Match(domainID, rawText string) entities.MatchResult` |
-| `execution` | `NewEngine(sandbox Prober) *Engine` | `RegisterWorkflow(*Workflow)`、`RegisterPolicy(CircuitBreakerPolicy)`、`Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error)` |
-| `llminjector` | `NewInjector() *Injector` | `RegisterSchema(schemaRef string, schema Schema, extractor Extractor)`、`Extract(entities.ExtractionRequest) entities.ExtractionResult` |
+| `execution` | `NewEngine(sandbox Prober) *Engine` | `RegisterWorkflow(*Workflow)`、`RegisterPolicy(CircuitBreakerPolicy)`、`SetObserver(Observer)`、`Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error)` |
+| `llminjector` | `NewInjector() *Injector` | `RegisterSchema(schemaRef string, schema Schema, extractor Extractor)`、`SetObserver(Observer)`、`Extract(entities.ExtractionRequest) entities.ExtractionResult` |
 | `sandbox` | `NewSandbox() *Sandbox` | `RegisterProbe(probeRef string, probe Probe)`、`Probe(entities.ProbeRequest) (entities.ProbeResult, error)` |
 | `registry` | `NewRegistry(router *intentrouter.Router, engine *execution.Engine) *Registry` | `RegisterDomain(Domain)`、`Domains() []string` |
+| `scorecard` | `NewRecorder() *Recorder` | `SetObserver` 可接受它；`Snapshot(workflowID string) Scorecard`、`Scorecard.DeterminismRatio()` |
 | `stdlib` | 无（`Default() Library` 返回内置动作） | 内置 `std.set`、`std.require`、`std.rule_check` |
 | `manifest` | 无（纯函数包） | `Load(data []byte, hooks Hooks, std stdlib.Library) (*registry.Domain, error)`、`Validate(data []byte, std stdlib.Library) Report` |
 
@@ -228,6 +272,14 @@ if result.Success {
 
 ## 8. 常见问题
 
-- **`engine.Run` 报 `no workflow registered for "xxx"`**：`WorkflowID` 和 `IntentNode.EntryStepRef` 必须对得上——`EntryStepRef` 传给 `Run` 时是当成 *WorkflowID* 使用的，不是 Step ID，命名上容易混淆，见 `NORMATIVE_HANDBOOK.md` 的命名规范一节。
+- **`engine.Run` 报 `no workflow registered for "xxx"`**：`WorkflowID` 和 `IntentNode.EntryWorkflowRef` 必须对得上——传给 `Run` 的就是 *WorkflowID*。
+- **`cee validate` 报 `entry_step_ref ... is deprecated`**：这个字段改名了。它装的一直是 `workflow_id`，而旧名字 `entry_step_ref` 读起来像在指一个 step，是纯粹的错名。改法就是把 JSON 里的键名换掉，值一个字不用动：
+
+  ```diff
+  - {"node_id": "finance.dup", "entry_step_ref": "finance.flag_duplicate"}
+  + {"node_id": "finance.dup", "entry_workflow_ref": "finance.flag_duplicate"}
+  ```
+
+  旧名仍然可用（第 3 条不允许删除已发布的 JSON 字段），只是会告警。两个名字都写且值不同则直接报错——那种情况没法在不猜作者意图的前提下解决。Go 那边字段已经是 `EntryWorkflowRef`，旧名不再存在，编译期就会提示。
 - **`sandbox_probe_ref` 声明了但没注册探针**：`Engine.Run` 会返回 `no probe registered for "xxx"` 的 error，而不是静默跳过门禁——这是故意的,不允许"声明了门禁但门禁形同虚设"。
 - **manifest 加载报 `references unregistered action_ref`**：检查 `Hooks` map 的 key 是否跟 JSON 里的 `action_ref` 完全一致（区分大小写）。

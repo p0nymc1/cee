@@ -67,15 +67,15 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("matched %s (confidence %.2f) -> workflow %s\n\n",
-		match.NodeRef, match.Confidence, match.EntryStepRef)
+		match.NodeRef, match.Confidence, match.EntryWorkflowRef)
 
 	fmt.Println("== Scenario 1: under the threshold, no human needed ==")
-	small, err := engine.Run(match.EntryStepRef, map[string]any{"amount": 240.0, "claimant": "wei"})
+	small, err := engine.Run(match.EntryWorkflowRef, map[string]any{"amount": 240.0, "claimant": "wei"})
 	report(small, err)
 
 	fmt.Println()
 	fmt.Println("== Scenario 2: over the threshold, parked for a manager ==")
-	large, err := engine.Run(match.EntryStepRef, map[string]any{"amount": 4800.0, "claimant": "wei"})
+	large, err := engine.Run(match.EntryWorkflowRef, map[string]any{"amount": 4800.0, "claimant": "wei"})
 	report(large, err)
 
 	// What an operator would see while the run is parked.

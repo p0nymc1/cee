@@ -98,10 +98,21 @@ func Validate(data []byte, std stdlib.Library) Report {
 		} else if !strings.Contains(intent.NodeID, ".") {
 			report.warnf("intent node_id %q has no domain prefix (convention: <domain>.<name>)", intent.NodeID)
 		}
-		if intent.EntryStepRef == "" {
-			report.errf("intent %q has no entry_step_ref", intent.NodeID)
-		} else if !workflowIDs[intent.EntryStepRef] {
-			report.errf("intent %q entry_step_ref %q does not match any workflow_id", intent.NodeID, intent.EntryStepRef)
+		if intent.conflictingEntry() {
+			report.errf(
+				"intent %q sets both entry_workflow_ref (%q) and the deprecated entry_step_ref (%q) to different values; keep one",
+				intent.NodeID, intent.EntryWorkflowRef, intent.DeprecatedEntryStepRef)
+		} else if intent.DeprecatedEntryStepRef != "" {
+			report.warnf(
+				"intent %q uses entry_step_ref, which is deprecated and will be removed; rename it to entry_workflow_ref (the value is a workflow_id, which is what the old name got wrong)",
+				intent.NodeID)
+		}
+
+		entry := intent.entryWorkflow()
+		if entry == "" {
+			report.errf("intent %q has no entry_workflow_ref", intent.NodeID)
+		} else if !workflowIDs[entry] {
+			report.errf("intent %q entry_workflow_ref %q does not match any workflow_id", intent.NodeID, entry)
 		}
 	}
 

@@ -20,10 +20,10 @@ func TestTwoUnrelatedDomainsCoexistWithoutEngineChanges(t *testing.T) {
 	reg.RegisterDomain(Domain{
 		Name: "finance",
 		Intents: []entities.IntentNode{{
-			NodeID:       "finance.duplicate_expense",
-			DomainID:     "finance",
-			Examples:     []string{"duplicate expense report"},
-			EntryStepRef: "finance.flag",
+			NodeID:           "finance.duplicate_expense",
+			DomainID:         "finance",
+			Examples:         []string{"duplicate expense report"},
+			EntryWorkflowRef: "finance.flag",
 		}},
 		Workflows: []*execution.Workflow{{
 			WorkflowID:  "finance.flag",
@@ -42,10 +42,10 @@ func TestTwoUnrelatedDomainsCoexistWithoutEngineChanges(t *testing.T) {
 	reg.RegisterDomain(Domain{
 		Name: "security",
 		Intents: []entities.IntentNode{{
-			NodeID:       "security.suspicious_login",
-			DomainID:     "security",
-			Examples:     []string{"suspicious login from unusual location"},
-			EntryStepRef: "security.contain",
+			NodeID:           "security.suspicious_login",
+			DomainID:         "security",
+			Examples:         []string{"suspicious login from unusual location"},
+			EntryWorkflowRef: "security.contain",
 		}},
 		Workflows: []*execution.Workflow{{
 			WorkflowID:  "security.contain",
@@ -68,11 +68,11 @@ func TestTwoUnrelatedDomainsCoexistWithoutEngineChanges(t *testing.T) {
 		t.Fatalf("expected both domains to match: finance=%+v security=%+v", financeMatch, securityMatch)
 	}
 
-	financeResult, err := engine.Run(financeMatch.EntryStepRef, map[string]any{})
+	financeResult, err := engine.Run(financeMatch.EntryWorkflowRef, map[string]any{})
 	if err != nil {
 		t.Fatalf("finance workflow failed: %v", err)
 	}
-	securityResult, err := engine.Run(securityMatch.EntryStepRef, map[string]any{})
+	securityResult, err := engine.Run(securityMatch.EntryWorkflowRef, map[string]any{})
 	if err != nil {
 		t.Fatalf("security workflow failed: %v", err)
 	}

@@ -1,0 +1,9 @@
+{
+  "plugin": "access-review",
+  "events": [
+    {"workflow_ref": "access-review.evaluate", "context": {"days_since_review": 10}},
+    {"workflow_ref": "access-review.evaluate", "context": {"days_since_review": 45}},
+    {"workflow_ref": "access-review.evaluate", "context": {"days_since_review": 91}},
+    {"workflow_ref": "access-review.evaluate", "context": {"days_since_review": 400}}
+  ]
+}

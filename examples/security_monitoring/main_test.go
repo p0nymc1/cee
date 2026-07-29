@@ -13,7 +13,7 @@ func TestOrdinaryHostIsAutoContained(t *testing.T) {
 		t.Fatalf("expected an ATT&CK technique match")
 	}
 
-	result, err := engine.Run(match.EntryStepRef, map[string]any{"target_host": "ws-4471"})
+	result, err := engine.Run(match.EntryWorkflowRef, map[string]any{"target_host": "ws-4471"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestCriticalAssetIsHeldForHumanApproval(t *testing.T) {
 	router, engine := buildRuntime()
 
 	match := router.Match("security", "repeated failed login attempts spike from one source")
-	result, err := engine.Run(match.EntryStepRef, map[string]any{"target_host": "dc01"})
+	result, err := engine.Run(match.EntryWorkflowRef, map[string]any{"target_host": "dc01"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

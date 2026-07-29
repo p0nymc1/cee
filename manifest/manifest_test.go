@@ -17,7 +17,7 @@ const financeManifestJSON = `
     {
       "node_id": "finance.duplicate_expense",
       "examples": ["duplicate expense report", "same receipt submitted twice"],
-      "entry_step_ref": "finance.flag_duplicate"
+      "entry_workflow_ref": "finance.flag_duplicate"
     }
   ],
   "policies": [
@@ -80,7 +80,7 @@ func TestLoadBuildsRunnableWorkflow(t *testing.T) {
 		t.Fatalf("expected intent match, got %+v", match)
 	}
 
-	result, err := engine.Run(match.EntryStepRef, map[string]any{})
+	result, err := engine.Run(match.EntryWorkflowRef, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error running workflow: %v", err)
 	}

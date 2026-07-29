@@ -42,6 +42,8 @@ flowchart TB
 | `intentrouter` | 意图路由层：把自然语言匹配到某个领域预注册的意图节点 | `Router`、`NewRouter`、`RegisterNode`、`Match` |
 | `execution` | 确定性执行引擎（DEE）：走 Step DAG，调用沙盒门禁、执行断路器兜底、挂起/恢复等待外部事件的流程 | `Engine`、`Step`、`LeafStep`、`CompositeStep`、`Workflow`、`CircuitBreakerPolicy`、`CircuitBreakerTripped`、`Prober`、`Suspended`、`Store`、`MemoryStore`、`State` |
 | `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
+| `llmhttp` | 真实 LLM 后端：仅用 `net/http` 打 OpenAI 兼容端点，产出 `llminjector.Extractor`（零依赖） | `Config`、`Extractor`、`Doer` |
+| `embedhttp` | 真实语义匹配后端：仅用 `net/http` 打 embedding 端点，产出 `intentrouter.Vectorizer`（零依赖） | `Config`、`New`、`Client`、`Doer` |
 | `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
 | `filestore` | 落盘的 `execution.Store` 实现：挂起的流程存成 JSON，跨重启存活 | `Store`、`New`、`Pending` |
 | `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
@@ -56,14 +58,14 @@ flowchart TB
 
 ```go
 type IntentNode struct {
-    NodeID, DomainID, EntryStepRef string
+    NodeID, DomainID, EntryWorkflowRef string
     Examples []string
     Metadata map[string]any
 }
 
 type MatchResult struct {
     Matched bool
-    NodeRef, EntryStepRef string
+    NodeRef, EntryWorkflowRef string
     Confidence float64
 }
 
@@ -92,7 +94,9 @@ type WorkflowResult struct {
 ## 4. 意图路由层（`intentrouter`）
 
 - `Router` 内部按 `DomainID` 分桶存储 `IntentNode`，`Match(domainID, rawText)` 只在对应桶内做匹配，**不会跨域检索**——两个领域即使用词高度相似也不会互相误命中（见 `intentrouter/router_test.go` 的 `TestMatchDoesNotLeakAcrossDomains`）。
-- 当前匹配算法是**词汇 Jaccard 相似度**（`tokenize` + 集合交并比），零依赖、可在无网络环境下运行。这是一个刻意的轻量级实现：真实场景下应替换为 sentence-transformers + 向量数据库一类的语义匹配，但 `Router` 的公开 API（`RegisterNode`/`Match`）保持不变，替换只发生在内部实现。
+- **默认匹配算法是词汇 Jaccard 相似度**（`tokenize` + 集合交并比），零依赖、可在无网络环境下运行——一个刻意的轻量级默认。
+- **升级为语义匹配只需一行**：`router.SetVectorizer(v)` 挂上一个 `Vectorizer`（`embedhttp.New(...)` 就是一个真实的、打 embedding 端点的实现），匹配即从词汇交并比切换为**embedding 余弦相似度**——于是"unusual sign-in from a new device"能匹配到"suspicious login"，尽管两者一个词都不重合（见 `intentrouter/semantic_test.go` 的 `TestSemanticMatchAcrossVocabulary`）。这印证了第 3 节"替换匹配算法不动契约"的承诺:`RegisterNode`/`Match` 的签名一字未变。
+- **example 向量惰性计算并缓存**（首次 `Match` 时算，之后只算 query）；由于 `Match` 签名没有 error 返回，若 embedding 端点报错，`Match` **降级回词汇匹配**而不是崩溃（`TestSemanticFailureDegradesToLexical`）——一个抖动的 embedding 服务不会把路由层拖垮。
 - `Match` 返回的 `MatchResult.Matched == false` 是一个明确信号，而不是猜测——调用方应据此转向 `llminjector` 做抽取，而不是让路由层"勉强给个答案"。
 
 ## 5. 确定性执行引擎（`execution`）
@@ -296,7 +300,7 @@ type Factory func(params map[string]any) (execution.Action, error)
 
 - `entry_step_id` / `on_success` 指向的 Step 是否真的存在于本 workflow
 - `circuit_breaker_policy_ref` 是否是已声明策略，且其 `fallback_step_ref` 是否存在于本 workflow
-- `sub_workflow_ref` / `intent.entry_step_ref` 是否对得上某个 `workflow_id`
+- `sub_workflow_ref` / `intent.entry_workflow_ref` 是否对得上某个 `workflow_id`（旧名 `entry_step_ref` 仍接受，但会报 deprecated 警告）
 - `step_id` 重复、缺 `action_ref`、未知 `type`
 - 标准动作的 `with` 参数是否合法（直接调 `Factory` 试绑定）
 - **`on_success` 成环**（报错）——这条路一定会让 `Run` 空转到撞上限，报告里会把环的路径打出来，形如 `a -> b -> a`

@@ -18,6 +18,7 @@ import (
 	"cee/intentrouter"
 	"cee/registry"
 	"cee/sandbox"
+	"cee/scorecard"
 )
 
 // criticalAssets is the security domain's own data -- the engine knows
@@ -72,9 +73,15 @@ func runEvent(router *intentrouter.Router, engine *execution.Engine, alertText, 
 		return
 	}
 	fmt.Printf("  matched technique %s (confidence %.2f) -> entering workflow %s\n",
-		match.NodeRef, match.Confidence, match.EntryStepRef)
+		match.NodeRef, match.Confidence, match.EntryWorkflowRef)
 
-	result, err := engine.Run(match.EntryStepRef, map[string]any{
+	// Measure this request. The recorder is per-request; attaching it to the
+	// engine costs nothing when no request is in flight because Run only
+	// calls the observer while it is set.
+	recorder := scorecard.NewRecorder()
+	engine.SetObserver(recorder)
+
+	result, err := engine.Run(match.EntryWorkflowRef, map[string]any{
 		"target_host": targetHost,
 		"technique":   match.NodeRef,
 	})
@@ -84,6 +91,7 @@ func runEvent(router *intentrouter.Router, engine *execution.Engine, alertText, 
 	}
 	fmt.Printf("  outcome: %s\n", describe(result.Output))
 	fmt.Printf("  trace:   %v\n", result.Trace)
+	fmt.Printf("  %s\n", recorder.Snapshot(match.EntryWorkflowRef))
 }
 
 func describe(output map[string]any) string {
@@ -111,16 +119,16 @@ func securityDomain() registry.Domain {
 		Name: "security",
 		Intents: []entities.IntentNode{
 			{
-				NodeID:       "security.T1110_brute_force",
-				DomainID:     "security",
-				Examples:     []string{"repeated failed login attempts spike", "many failed logins from one source", "password spray detected"},
-				EntryStepRef: "security.contain_threat",
+				NodeID:           "security.T1110_brute_force",
+				DomainID:         "security",
+				Examples:         []string{"repeated failed login attempts spike", "many failed logins from one source", "password spray detected"},
+				EntryWorkflowRef: "security.contain_threat",
 			},
 			{
-				NodeID:       "security.T1078_valid_account_abuse",
-				DomainID:     "security",
-				Examples:     []string{"login from unusual location for known account", "valid credentials used at impossible travel speed"},
-				EntryStepRef: "security.contain_threat",
+				NodeID:           "security.T1078_valid_account_abuse",
+				DomainID:         "security",
+				Examples:         []string{"login from unusual location for known account", "valid credentials used at impossible travel speed"},
+				EntryWorkflowRef: "security.contain_threat",
 			},
 		},
 		Policies: []execution.CircuitBreakerPolicy{

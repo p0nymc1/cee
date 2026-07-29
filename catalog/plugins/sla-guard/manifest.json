@@ -1,0 +1,20 @@
+{
+  "name": "sla-guard",
+  "intents": [
+    {"node_id": "sla-guard.check", "examples": ["check ticket sla", "is this ticket within sla", "sla breach check"], "entry_workflow_ref": "sla-guard.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "route_to_breach", "fallback_step_ref": "breach"}
+  ],
+  "workflows": [{
+    "workflow_id": "sla-guard.evaluate",
+    "entry_step_id": "check_response_time",
+    "steps": [
+      {"step_id": "check_response_time", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "response_minutes", "op": "lte", "value": 60},
+       "circuit_breaker_policy_ref": "route_to_breach", "on_success": "within_sla"},
+      {"step_id": "within_sla", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"sla_met": true}}},
+      {"step_id": "breach", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"sla_breached": true}}}
+    ]
+  }]
+}

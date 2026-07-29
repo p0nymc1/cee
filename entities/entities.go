@@ -8,19 +8,19 @@ package entities
 // IntentNode is a registrable, matchable intent within one domain's
 // namespace.
 type IntentNode struct {
-	NodeID       string
-	DomainID     string
-	Examples     []string
-	EntryStepRef string
-	Metadata     map[string]any
+	NodeID           string
+	DomainID         string
+	Examples         []string
+	EntryWorkflowRef string
+	Metadata         map[string]any
 }
 
 // MatchResult is what the intent router reports back for a match attempt.
 type MatchResult struct {
-	Matched      bool
-	NodeRef      string
-	Confidence   float64
-	EntryStepRef string
+	Matched          bool
+	NodeRef          string
+	Confidence       float64
+	EntryWorkflowRef string
 }
 
 // ExtractionRequest asks the edge LLM injector to pull structured fields out

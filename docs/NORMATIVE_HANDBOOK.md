@@ -53,7 +53,7 @@
 |---|---|---|---|
 | `DomainID` | 小写、单个单词或短横线 | `finance`、`network-security` | 全局唯一，两个领域不能同名 |
 | `IntentNode.NodeID` | `<domain>.<snake_case 动作>` | `finance.duplicate_expense` | 域前缀避免跨域碰撞时难以定位来源 |
-| `Workflow.WorkflowID` | `<domain>.<snake_case 流程名>` | `finance.flag_duplicate` | **同时也是 `IntentNode.EntryStepRef` 要填的值**——这是当前实现里一个容易踩坑的耦合点：`EntryStepRef` 语义上是"入口工作流"，不是"入口步骤"，命名沿用是历史遗留，新增代码时按此约定填写,不要按字面意思去找一个"Step" |
+| `Workflow.WorkflowID` | `<domain>.<snake_case 流程名>` | `finance.flag_duplicate` | **同时也是 `IntentNode.EntryWorkflowRef` / manifest 里 `entry_workflow_ref` 要填的值**。这个字段以前叫 `EntryStepRef` / `entry_step_ref`，是个错名——它从来装的都是 workflow_id，不是 step_id。现已改名；旧的 JSON 名按第 3 条继续接受但会告警，**新 manifest 一律用 `entry_workflow_ref`** |
 | `Step.StepID` | `<snake_case 动作>`，域内唯一即可,不需要域前缀 | `check`、`notify`、`human_review` | 只在所属 Workflow 内寻址,不需要跨域唯一 |
 | `CircuitBreakerPolicy.PolicyID` | `<snake_case 策略意图>` | `escalate_to_review`、`security_containment_gate` | 命名应体现"失败后做什么",而不是"哪个 Step 用了它"——同一策略允许被多个 Step 引用 |
 | `schema_ref` / `probe_ref` / `action_ref` | `<domain>.<snake_case 名称>` | `finance.expense_fields`、`finance.check_duplicate` | 与 `NodeID` 同样加域前缀,原因相同 |

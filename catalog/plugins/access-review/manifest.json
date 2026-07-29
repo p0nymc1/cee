@@ -1,0 +1,20 @@
+{
+  "name": "access-review",
+  "intents": [
+    {"node_id": "access-review.stale_access", "examples": ["review stale access", "account not reviewed recently", "check access recertification"], "entry_workflow_ref": "access-review.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "route_to_flag", "fallback_step_ref": "flag_for_review"}
+  ],
+  "workflows": [{
+    "workflow_id": "access-review.evaluate",
+    "entry_step_id": "check_recency",
+    "steps": [
+      {"step_id": "check_recency", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "days_since_review", "op": "lte", "value": 90},
+       "circuit_breaker_policy_ref": "route_to_flag", "on_success": "compliant"},
+      {"step_id": "compliant", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"access_compliant": true}}},
+      {"step_id": "flag_for_review", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"needs_access_review": true}}}
+    ]
+  }]
+}

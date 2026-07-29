@@ -1,0 +1,9 @@
+{
+  "plugin": "sla-guard",
+  "events": [
+    {"workflow_ref": "sla-guard.evaluate", "context": {"response_minutes": 12}},
+    {"workflow_ref": "sla-guard.evaluate", "context": {"response_minutes": 45}},
+    {"workflow_ref": "sla-guard.evaluate", "context": {"response_minutes": 61}},
+    {"workflow_ref": "sla-guard.evaluate", "context": {"response_minutes": 240}}
+  ]
+}

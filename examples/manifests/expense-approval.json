@@ -1,7 +1,7 @@
 {
   "name": "expense-approval",
   "intents": [
-    {"node_id": "expense-approval.review", "examples": ["review this expense claim", "approve expense report"], "entry_step_ref": "expense-approval.review"}
+    {"node_id": "expense-approval.review", "examples": ["review this expense claim", "approve expense report"], "entry_workflow_ref": "expense-approval.review"}
   ],
   "policies": [
     {"policy_id": "escalate_to_human", "fallback_step_ref": "hold_for_human"},

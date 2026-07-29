@@ -19,7 +19,7 @@ const noCodeManifestJSON = `
 {
   "name": "expense-guard",
   "intents": [
-    {"node_id": "expense-guard.screen", "examples": ["screen this expense"], "entry_step_ref": "expense-guard.screen_expense"}
+    {"node_id": "expense-guard.screen", "examples": ["screen this expense"], "entry_workflow_ref": "expense-guard.screen_expense"}
   ],
   "policies": [
     {"policy_id": "route_to_flag", "fallback_step_ref": "flag"}
