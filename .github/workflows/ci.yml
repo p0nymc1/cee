@@ -7,6 +7,12 @@ on:
   # Lets a run be started by hand from the Actions tab or `gh workflow run`,
   # which the push/PR triggers alone do not allow.
   workflow_dispatch:
+  # Keeps the crypto surveillance sweep current: it screens live quotes, so a
+  # page rebuilt only on pushes would show whatever the market was doing
+  # whenever someone last committed. Offset from the hour because scheduled
+  # runs bunch up and get delayed at :00.
+  schedule:
+    - cron: "17 * * * *"
 
 jobs:
   build:
@@ -76,7 +82,7 @@ jobs:
       - name: Run everything, capturing output
         run: |
           mkdir -p demo-output
-          for ex in network_detection security_monitoring human_approval meta_scenarios; do
+          for ex in crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do
             go run "./examples/$ex" | tee "demo-output/$ex.txt"
           done
           for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do
@@ -105,6 +111,16 @@ jobs:
             echo "| Packages passing | $(cat demo-output/packages.txt) |"
             echo "| Tests | $(cat demo-output/tests.txt) |"
             echo "| External dependencies | 0 |"
+            echo
+            echo "## Crypto market surveillance — live data"
+            echo
+            echo "Fixed thresholds over live quotes, re-run hourly. Anomaly flagging, not"
+            echo "investment advice. A finding is only raised when the data behind it is worth"
+            echo "acting on: a probe holds anything computed from a stale quote or a book too"
+            echo "thin for a percentage move to mean anything."
+            echo '```'
+            cat demo-output/crypto_surveillance.txt
+            echo '```'
             echo
             echo "## Network intrusion detection"
             echo

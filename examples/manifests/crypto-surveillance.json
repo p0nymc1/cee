@@ -1,0 +1,44 @@
+{
+  "name": "crypto-surveillance",
+  "intents": [
+    {"node_id": "crypto-surveillance.screen_market_data",
+     "examples": ["screen this market data point", "check this asset for anomalies", "surveillance sweep over quoted prices"],
+     "entry_workflow_ref": "crypto-surveillance.screen"}
+  ],
+
+  "policies": [
+    {"policy_id": "nothing_material", "fallback_step_ref": "note_quiet"},
+    {"policy_id": "signal_quality_gate", "fallback_step_ref": "hold_low_quality"}
+  ],
+
+  "workflows": [{
+    "workflow_id": "crypto-surveillance.screen",
+    "entry_step_id": "enrich",
+    "steps": [
+      {"step_id": "enrich", "type": "leaf", "action_ref": "crypto.enrich",
+       "on_success": "assess"},
+
+      {"step_id": "assess", "type": "leaf", "action_ref": "crypto.assess",
+       "on_success": "gate"},
+
+      {"step_id": "gate", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "finding", "op": "neq", "value": "none"},
+       "circuit_breaker_policy_ref": "nothing_material",
+       "on_success": "raise"},
+
+      {"step_id": "raise", "type": "leaf", "action_ref": "crypto.raise_alert",
+       "sandbox_probe_ref": "crypto.assess_signal_quality",
+       "circuit_breaker_policy_ref": "signal_quality_gate",
+       "on_success": "record"},
+
+      {"step_id": "record", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "flagged for review"}}},
+
+      {"step_id": "note_quiet", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "nothing material"}}},
+
+      {"step_id": "hold_low_quality", "type": "leaf", "action_ref": "std.set",
+       "with": {"fields": {"disposition": "not flagged: the data is not good enough to act on"}}}
+    ]
+  }]
+}

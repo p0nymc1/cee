@@ -82,6 +82,17 @@ written by hand. Built $built.
   <li><b>0</b><span>external dependencies</span></li>
 </ul>
 
+<h2>Crypto market surveillance — live data</h2>
+<p>Fixed thresholds over live quotes, swept hourly. This is anomaly flagging, not investment
+advice: every rule is a constant in a manifest or in deterministic Go, and no model is asked
+whether anything is worth buying. The guardrail is that a correct rule can still fire on data
+not worth acting on — a quote minutes stale describes a market that has moved on, and a large
+percentage move on a thin book is noise. A probe checks both before anything is raised.</p>
+HTML
+
+block demo-output/crypto_surveillance.txt >> "$out/index.html"
+
+cat >> "$out/index.html" <<'HTML'
 <h2>Network intrusion detection</h2>
 <p>Alerts are matched to MITRE ATT&amp;CK techniques and contained automatically — unless
 containment would do more damage than the intrusion. This is the reason detection teams
