@@ -168,3 +168,37 @@ jobs:
           # success -- exactly how a dot-prefixed path silently uploaded zero
           # files while the step went green.
           if-no-files-found: error
+
+  # The job summary is per-run, so its URL changes every time and cannot be
+  # handed to anyone. This publishes the same captured output to one fixed
+  # address, rebuilt on every push to main -- a page you can send someone that
+  # is never out of date with the code, because nothing on it is written by
+  # hand.
+  pages:
+    needs: demo
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch what the demo job actually ran
+        uses: actions/download-artifact@v4
+        with:
+          name: demo-output
+          path: demo-output
+
+      - name: Build the page
+        run: bash .github/build-site.sh
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
