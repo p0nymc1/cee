@@ -2,8 +2,10 @@ package stdlib
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/p0nymc1/cee/entities"
 	"github.com/p0nymc1/cee/execution"
 )
 
@@ -106,5 +108,71 @@ func TestSuspendReturnsASuspension(t *testing.T) {
 	}
 	if suspended.Reason != "awaiting human approval" {
 		t.Fatalf("the reason must reach the operator, got %q", suspended.Reason)
+	}
+}
+
+func TestRequireVerifiedRejectsMalformedParams(t *testing.T) {
+	for name, params := range map[string]map[string]any{
+		"missing fields": {},
+		"not an array":   {"fields": "amount"},
+		"empty array":    {"fields": []any{}},
+		"non-string":     {"fields": []any{42}},
+	} {
+		if _, err := Default()["std.require_verified"](params); err == nil {
+			t.Fatalf("%s should have been rejected at load time", name)
+		}
+	}
+}
+
+// The gate a consequential step puts in front of itself.
+func TestRequireVerifiedRefusesModelDerivedValues(t *testing.T) {
+	action, err := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = action(map[string]any{
+		"amount":                 50000.0,
+		entities.ModelDerivedKey: []string{"amount"},
+	})
+	if err == nil {
+		t.Fatal("a model-derived amount must not pass a verified gate")
+	}
+	if !strings.Contains(err.Error(), "amount") {
+		t.Fatalf("the refusal should name the field, got %v", err)
+	}
+}
+
+func TestRequireVerifiedPassesAuthoritativeValues(t *testing.T) {
+	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
+
+	// amount came from our own ledger; only merchant was extracted.
+	if _, err := action(map[string]any{
+		"amount":                 50000.0,
+		"merchant":               "acme",
+		entities.ModelDerivedKey: []string{"merchant"},
+	}); err != nil {
+		t.Fatalf("a value nobody guessed should pass: %v", err)
+	}
+}
+
+// A context that never went near an extractor has no provenance at all, and
+// must not be treated as suspect.
+func TestRequireVerifiedPassesWhenNothingWasExtracted(t *testing.T) {
+	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
+	if _, err := action(map[string]any{"amount": 50000.0}); err != nil {
+		t.Fatalf("expected a plain context to pass, got %v", err)
+	}
+}
+
+// Provenance survives a suspended run being written to disk and read back,
+// where a []string becomes a []any.
+func TestRequireVerifiedSurvivesAJSONRoundTrip(t *testing.T) {
+	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
+	if _, err := action(map[string]any{
+		"amount":                 50000.0,
+		entities.ModelDerivedKey: []any{"amount"},
+	}); err == nil {
+		t.Fatal("provenance must still be honoured after a JSON round trip")
 	}
 }

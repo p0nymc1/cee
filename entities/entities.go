@@ -23,6 +23,12 @@ type MatchResult struct {
 	EntryWorkflowRef string
 }
 
+// ModelDerivedKey is the workflow-context key under which the list of
+// model-produced field names travels, so provenance survives the hop from
+// extraction into execution. Namespaced like the engine's own keys, because a
+// domain field must never collide with it.
+const ModelDerivedKey = "cee.model_derived"
+
 // ExtractionRequest asks the edge LLM injector to pull structured fields out
 // of unstructured text, constrained to a named schema.
 type ExtractionRequest struct {
@@ -39,6 +45,21 @@ type ExtractionResult struct {
 	Success           bool
 	StructuredPayload map[string]any
 	ValidationErrors  []string
+
+	// ModelDerived names the fields in StructuredPayload that a model
+	// produced. Stripping decision fields stops an extractor from saying what
+	// should happen, but it does nothing about a misread fact: an extractor
+	// that reads $50,000 as $5,000 has not decided anything and has still
+	// decided everything, because the deterministic rules downstream will
+	// confidently approve. Carrying provenance is what lets a consequential
+	// step refuse to act on a value that was guessed rather than known.
+	//
+	// This is deliberately a list of names rather than a confidence score.
+	// A model's self-reported confidence is not something the engine can
+	// audit, and a number nobody can check is worse than no number at all --
+	// it manufactures assurance. Whether a value came from a model is instead
+	// a structural fact, known for certain at the point it is produced.
+	ModelDerived []string
 }
 
 // ProbeRequest asks the sandbox to simulate a step's side effect before the

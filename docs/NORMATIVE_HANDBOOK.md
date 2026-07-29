@@ -24,6 +24,23 @@
   - 来自 `stdlib` 或领域 Go Hook 的确定性计算 → 允许，因为它就是"业务规则"本身，而业务规则本来就该由代码承担。
 - **禁止的组合**：用 `llminjector` 抽出一个事实字段（合法），再让 `std.rule_check` 去比对它——这本身没问题；但**不允许**让 Extractor 直接输出一个已经算好的判断结果，再用 `std.set` 原样搬进 context 来"洗白"。Code Review 时如果看到 `std.set` 的 `fields` 值不是字面常量而是来自抽取结果的判断字段，按违反 1.1 处理。
 
+#### 1.1.2 抽取出来的是"猜测"，不是"事实"
+
+1.1 挡住了"LLM 说该怎么办"，但挡不住**抽错一个数**。一个把 $50,000 读成 $5,000 的抽取器什么决定都没做，却又什么都决定了——下游的确定性规则会非常自信地自动放行。
+
+因此 `Injector.Extract` **结构性地**给它产出的每个字段打上来源标记（`ExtractionResult.ModelDerived`），抽取器无法豁免。`llminjector.ContextFrom` 负责让这个标记跟着值一起进入 workflow context（key 为 `cee.model_derived`）。
+
+- **为什么不是置信度分数**：模型自报的置信度引擎无法审计，而**一个没人能核实的数字比没有数字更糟——它制造虚假的安心**。"这个值是不是模型猜的"则是一个在产生的那一刻就百分之百确定的结构性事实。
+- **有后果的 Step 必须自己挡**：转账、隔离主机、停用账号这类步骤，应当用 `std.require_verified` 声明哪些字段不接受猜测值，失败经断路器转人工：
+
+  ```json
+  {"action_ref": "std.require_verified", "with": {"fields": ["amount", "account"]},
+   "circuit_breaker_policy_ref": "needs_human_check"}
+  ```
+
+- **禁止洗白（对应 1.1.1 同一类漏洞）**：**不存在也不允许新增任何"把字段标记为已核实"的标准动作**。manifest 里能盖"已核实"的图章就是一件洗钱工具——抽一个数、盖个章、照着执行。把一个值从"猜测"提升为"事实"只能由 Go Hook 完成，且必须是**真的**去对了权威系统或问了人之后。Code Review 时看到任何直接改写 `cee.model_derived` 的 Hook，按违反本条处理。
+- **调用方不得手动 merge 抽取结果**：`ContextFrom` 存在的唯一理由就是让正确做法比错误做法更省事。直接把 `StructuredPayload` 拷进 context 会静默丢掉来源，之后 `std.require_verified` 就形同虚设。
+
 ### 1.2 Sandbox Probe 必须只读/模拟，不能有真实副作用
 
 `sandbox.Probe` 注册的函数运行在"预演"阶段，**在真实 Step 执行之前**。探针内部不允许调用任何会修改外部状态的 API（转账、发通知、改配置、写数据库……）。

@@ -53,3 +53,78 @@ func TestUnregisteredSchemaFails(t *testing.T) {
 		t.Fatalf("expected failure for unregistered schema")
 	}
 }
+
+// Stripping decision fields stops an extractor from saying what should happen.
+// These cover the other half: a misread fact decides just as hard, so where a
+// value came from has to travel with it.
+
+func TestExtractionLabelsEveryFieldAsModelDerived(t *testing.T) {
+	inj := NewInjector()
+	inj.RegisterSchema("finance.expense_fields",
+		Schema{"amount": FieldFloat64, "category": FieldString},
+		func(string) (map[string]any, error) {
+			return map[string]any{"amount": 4200.0, "category": "travel", "is_fraud": true}, nil
+		})
+
+	result := inj.Extract(entities.ExtractionRequest{RawText: "x", SchemaRef: "finance.expense_fields"})
+	if !result.Success {
+		t.Fatalf("unexpected failure: %v", result.ValidationErrors)
+	}
+	// An extractor cannot opt out of being labelled.
+	if len(result.ModelDerived) != 2 {
+		t.Fatalf("expected both fields labelled, got %v", result.ModelDerived)
+	}
+	if result.ModelDerived[0] != "amount" || result.ModelDerived[1] != "category" {
+		t.Fatalf("provenance should be sorted for stable replay, got %v", result.ModelDerived)
+	}
+	// The stripped decision field is not labelled, because it does not exist.
+	for _, name := range result.ModelDerived {
+		if name == "is_fraud" {
+			t.Fatal("a stripped field must not appear in provenance")
+		}
+	}
+}
+
+func TestContextFromCarriesProvenanceAlongsideAuthoritativeFields(t *testing.T) {
+	inj := NewInjector()
+	inj.RegisterSchema("s", Schema{"amount": FieldFloat64},
+		func(string) (map[string]any, error) { return map[string]any{"amount": 4200.0}, nil })
+	result := inj.Extract(entities.ExtractionRequest{RawText: "x", SchemaRef: "s"})
+
+	// account_id came from our own system; amount was read out of a document.
+	ctx := ContextFrom(map[string]any{"account_id": "acct-1"}, result)
+
+	if ctx["account_id"] != "acct-1" || ctx["amount"] != 4200.0 {
+		t.Fatalf("both values should be present, got %v", ctx)
+	}
+	derived, _ := ctx[entities.ModelDerivedKey].([]string)
+	if len(derived) != 1 || derived[0] != "amount" {
+		t.Fatalf("only the extracted field is model-derived, got %v", derived)
+	}
+}
+
+// Two extractions into one context must not lose the first one's provenance.
+func TestContextFromAccumulatesProvenanceAcrossExtractions(t *testing.T) {
+	inj := NewInjector()
+	inj.RegisterSchema("a", Schema{"amount": FieldFloat64},
+		func(string) (map[string]any, error) { return map[string]any{"amount": 1.0}, nil })
+	inj.RegisterSchema("b", Schema{"merchant": FieldString},
+		func(string) (map[string]any, error) { return map[string]any{"merchant": "acme"}, nil })
+
+	ctx := ContextFrom(nil, inj.Extract(entities.ExtractionRequest{SchemaRef: "a"}))
+	ctx = ContextFrom(ctx, inj.Extract(entities.ExtractionRequest{SchemaRef: "b"}))
+
+	derived, _ := ctx[entities.ModelDerivedKey].([]string)
+	if len(derived) != 2 || derived[0] != "amount" || derived[1] != "merchant" {
+		t.Fatalf("both extractions should be recorded, got %v", derived)
+	}
+}
+
+// A context with nothing extracted carries no provenance key at all, so an
+// ordinary workflow is not burdened with engine bookkeeping.
+func TestContextFromAddsNothingWhenNothingWasExtracted(t *testing.T) {
+	ctx := ContextFrom(map[string]any{"account_id": "acct-1"}, entities.ExtractionResult{Success: true})
+	if _, present := ctx[entities.ModelDerivedKey]; present {
+		t.Fatalf("expected no provenance key, got %v", ctx)
+	}
+}

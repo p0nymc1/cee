@@ -13,7 +13,9 @@ package stdlib
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/p0nymc1/cee/entities"
 	"github.com/p0nymc1/cee/execution"
 )
 
@@ -30,10 +32,11 @@ type Library map[string]Factory
 // custom hook names.
 func Default() Library {
 	return Library{
-		"std.set":        setFactory,
-		"std.require":    requireFactory,
-		"std.rule_check": ruleCheckFactory,
-		"std.suspend":    suspendFactory,
+		"std.set":              setFactory,
+		"std.require":          requireFactory,
+		"std.rule_check":       ruleCheckFactory,
+		"std.suspend":          suspendFactory,
+		"std.require_verified": requireVerifiedFactory,
 	}
 }
 
@@ -216,4 +219,80 @@ func toFloat(v any) (float64, error) {
 	default:
 		return 0, fmt.Errorf("not numeric: %v", v)
 	}
+}
+
+// requireVerifiedFactory refuses to let a step run on values a model guessed.
+//
+// Stripping decision fields stops an extractor from saying what should happen.
+// It does nothing about a misread fact: an extractor that reads $50,000 as
+// $5,000 has decided nothing and has still decided everything, because the
+// rules downstream will confidently approve. This is the gate a consequential
+// step puts in front of itself -- pay out, isolate a host, disable an account
+// -- to say that those particular values must be known rather than guessed.
+//
+// Failing routes through the step's circuit breaker like any other failure, so
+// the usual answer is a fallback that puts it in front of a human.
+//
+//	{"action_ref": "std.require_verified", "with": {"fields": ["amount", "account"]},
+//	 "circuit_breaker_policy_ref": "needs_human_check"}
+//
+// There is deliberately no companion action that marks a field verified.
+// Anything that could stamp "verified" from inside a manifest would be a
+// laundering tool: extract a number, mark it checked, act on it. Promoting a
+// value is a Go hook's job, and only after it has been corroborated against a
+// system of record or a person -- see the normative handbook.
+func requireVerifiedFactory(params map[string]any) (execution.Action, error) {
+	raw, ok := params["fields"]
+	if !ok {
+		return nil, fmt.Errorf("std.require_verified requires a 'fields' array")
+	}
+	list, ok := raw.([]any)
+	if !ok || len(list) == 0 {
+		return nil, fmt.Errorf("std.require_verified 'fields' must be a non-empty array")
+	}
+	fields := make([]string, 0, len(list))
+	for _, item := range list {
+		name, ok := item.(string)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("std.require_verified 'fields' must contain non-empty strings")
+		}
+		fields = append(fields, name)
+	}
+
+	return func(ctx map[string]any) (map[string]any, error) {
+		derived := map[string]bool{}
+		for _, name := range provenanceOf(ctx) {
+			derived[name] = true
+		}
+		var guessed []string
+		for _, field := range fields {
+			if derived[field] {
+				guessed = append(guessed, field)
+			}
+		}
+		if len(guessed) > 0 {
+			return nil, fmt.Errorf(
+				"refusing to act on model-derived %s: extracted values are not verified facts",
+				strings.Join(guessed, ", "))
+		}
+		return map[string]any{}, nil
+	}, nil
+}
+
+// provenanceOf reads the model-derived list, tolerating the []any shape it
+// takes after a JSON round trip through a suspended run's Store.
+func provenanceOf(ctx map[string]any) []string {
+	switch v := ctx[entities.ModelDerivedKey].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }

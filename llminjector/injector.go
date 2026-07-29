@@ -8,6 +8,7 @@ package llminjector
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/p0nymc1/cee/entities"
 )
@@ -104,7 +105,18 @@ func (inj *Injector) Extract(req entities.ExtractionRequest) entities.Extraction
 	if len(errs) > 0 {
 		return entities.ExtractionResult{Success: false, ValidationErrors: errs}
 	}
-	return entities.ExtractionResult{Success: true, StructuredPayload: clean}
+
+	// Every field here came out of a model. That is recorded structurally,
+	// exactly like the stripping above: the injector is the only place
+	// extraction happens, so it is the only place that can know this for
+	// certain, and an extractor cannot opt out of being labelled.
+	derived := make([]string, 0, len(clean))
+	for field := range clean {
+		derived = append(derived, field)
+	}
+	sort.Strings(derived) // stable, so a recorded run replays identically
+
+	return entities.ExtractionResult{Success: true, StructuredPayload: clean, ModelDerived: derived}
 }
 
 func matchesType(value any, wantType FieldType) bool {
@@ -121,4 +133,63 @@ func matchesType(value any, wantType FieldType) bool {
 	default:
 		return false
 	}
+}
+
+// ContextFrom merges an extraction into a workflow context, carrying the
+// provenance with it.
+//
+// It exists because the alternative -- callers merging StructuredPayload
+// themselves -- silently discards which fields were guessed, and a value's
+// origin becomes unknowable the moment it lands in a plain map. Making the
+// correct merge the easy one is the only thing that keeps std.require_verified
+// meaningful downstream.
+//
+// base may be nil. Fields already in base are overwritten by the extraction,
+// and any provenance base was already carrying is preserved alongside the new
+// entries.
+func ContextFrom(base map[string]any, result entities.ExtractionResult) map[string]any {
+	ctx := make(map[string]any, len(base)+len(result.StructuredPayload)+1)
+	for k, v := range base {
+		ctx[k] = v
+	}
+
+	derived := map[string]bool{}
+	for _, field := range existingProvenance(base) {
+		derived[field] = true
+	}
+	for k, v := range result.StructuredPayload {
+		ctx[k] = v
+	}
+	for _, field := range result.ModelDerived {
+		derived[field] = true
+	}
+
+	if len(derived) == 0 {
+		return ctx
+	}
+	names := make([]string, 0, len(derived))
+	for field := range derived {
+		names = append(names, field)
+	}
+	sort.Strings(names)
+	ctx[entities.ModelDerivedKey] = names
+	return ctx
+}
+
+// existingProvenance reads a provenance list already in a context, tolerating
+// the []any shape a list takes after a JSON round trip through a Store.
+func existingProvenance(ctx map[string]any) []string {
+	switch v := ctx[entities.ModelDerivedKey].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
