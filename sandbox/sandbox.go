@@ -8,7 +8,7 @@ package sandbox
 import (
 	"fmt"
 
-	"cee/entities"
+	"github.com/cee-project/cee/entities"
 )
 
 // Probe simulates one step's side effect and reports whether it looks safe

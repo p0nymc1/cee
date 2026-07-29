@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"cee/execution"
+	"github.com/cee-project/cee/execution"
 )
 
 // The manifests are read by repo-relative path, as `go run ./examples/...`

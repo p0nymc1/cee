@@ -7,9 +7,9 @@ package registry
 import (
 	"testing"
 
-	"cee/entities"
-	"cee/execution"
-	"cee/intentrouter"
+	"github.com/cee-project/cee/entities"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
 )
 
 func TestTwoUnrelatedDomainsCoexistWithoutEngineChanges(t *testing.T) {

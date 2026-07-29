@@ -61,10 +61,10 @@ manifest, stdlib  ←  cmd/cee
 package main
 
 import (
-    "cee/entities"
-    "cee/execution"
-    "cee/intentrouter"
-    "cee/registry"
+    "github.com/cee-project/cee/entities"
+    "github.com/cee-project/cee/execution"
+    "github.com/cee-project/cee/intentrouter"
+    "github.com/cee-project/cee/registry"
 )
 
 func main() {

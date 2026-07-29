@@ -13,12 +13,12 @@ package main
 import (
 	"fmt"
 
-	"cee/entities"
-	"cee/execution"
-	"cee/intentrouter"
-	"cee/registry"
-	"cee/sandbox"
-	"cee/scorecard"
+	"github.com/cee-project/cee/entities"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
+	"github.com/cee-project/cee/registry"
+	"github.com/cee-project/cee/sandbox"
+	"github.com/cee-project/cee/scorecard"
 )
 
 // criticalAssets is the security domain's own data -- the engine knows

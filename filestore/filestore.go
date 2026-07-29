@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"cee/execution"
+	"github.com/cee-project/cee/execution"
 )
 
 // Store persists suspended workflows under a directory. Safe for concurrent

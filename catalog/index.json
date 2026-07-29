@@ -1,0 +1,24 @@
+{
+  "plugins": [
+    {
+      "name": "sla-guard",
+      "description": "Marks a support ticket as within SLA or breached based on a response-time threshold.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "sla-guard",
+      "manifest": "plugins/sla-guard/manifest.json",
+      "benchmark": "plugins/sla-guard/benchmark.json",
+      "tags": ["support", "ops"]
+    },
+    {
+      "name": "access-review",
+      "description": "Flags an account for recertification when it has not been reviewed within the allowed window.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "access-review",
+      "manifest": "plugins/access-review/manifest.json",
+      "benchmark": "plugins/access-review/benchmark.json",
+      "tags": ["security", "compliance"]
+    }
+  ]
+}

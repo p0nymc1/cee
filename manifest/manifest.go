@@ -23,10 +23,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"cee/entities"
-	"cee/execution"
-	"cee/registry"
-	"cee/stdlib"
+	"github.com/cee-project/cee/entities"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/registry"
+	"github.com/cee-project/cee/stdlib"
 )
 
 // File is the on-disk shape of a domain manifest.

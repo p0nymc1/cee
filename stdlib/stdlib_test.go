@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"cee/execution"
+	"github.com/cee-project/cee/execution"
 )
 
 func TestSetWritesFields(t *testing.T) {

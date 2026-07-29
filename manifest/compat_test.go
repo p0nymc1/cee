@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"cee/stdlib"
+	"github.com/cee-project/cee/stdlib"
 )
 
 // entry_step_ref was the original name for the field that names an intent's

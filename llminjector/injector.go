@@ -9,7 +9,7 @@ package llminjector
 import (
 	"fmt"
 
-	"cee/entities"
+	"github.com/cee-project/cee/entities"
 )
 
 // FieldType is the set of primitive kinds an extracted field may declare.
@@ -35,13 +35,29 @@ type registration struct {
 	extractor Extractor
 }
 
+// Observer is notified each time an extraction actually invokes its
+// extractor -- i.e. each time the edge LLM is called. A scorecard recorder
+// uses this to count the (few) non-deterministic operations in a run
+// against the (many) deterministic engine steps. A failed schema lookup is
+// not an LLM call and is not reported.
+type Observer interface {
+	ObserveExtraction(schemaRef string)
+}
+
 // Injector holds the schemas and extractors domains have registered.
 type Injector struct {
 	registrations map[string]registration
+	observer      Observer
 }
 
 func NewInjector() *Injector {
 	return &Injector{registrations: make(map[string]registration)}
+}
+
+// SetObserver attaches an Observer for metrics collection. Passing nil (the
+// default) disables observation with zero overhead.
+func (inj *Injector) SetObserver(o Observer) {
+	inj.observer = o
 }
 
 func (inj *Injector) RegisterSchema(schemaRef string, schema Schema, extractor Extractor) {
@@ -58,6 +74,12 @@ func (inj *Injector) Extract(req entities.ExtractionRequest) entities.Extraction
 			Success:          false,
 			ValidationErrors: []string{fmt.Sprintf("no schema registered for %q", req.SchemaRef)},
 		}
+	}
+
+	// The extractor is about to be invoked -- this is the run's one
+	// non-deterministic (edge LLM) operation, so report it for scoring.
+	if inj.observer != nil {
+		inj.observer.ObserveExtraction(req.SchemaRef)
 	}
 
 	payload, err := reg.extractor(req.RawText)

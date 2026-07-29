@@ -14,12 +14,12 @@ import (
 	"fmt"
 	"os"
 
-	"cee/entities"
-	"cee/execution"
-	"cee/intentrouter"
-	"cee/manifest"
-	"cee/registry"
-	"cee/stdlib"
+	"github.com/cee-project/cee/entities"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
+	"github.com/cee-project/cee/manifest"
+	"github.com/cee-project/cee/registry"
+	"github.com/cee-project/cee/stdlib"
 )
 
 const manifestPath = "examples/manifests/expense-approval.json"

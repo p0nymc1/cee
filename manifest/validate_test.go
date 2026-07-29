@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"cee/execution"
-	"cee/intentrouter"
-	"cee/registry"
-	"cee/stdlib"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
+	"github.com/cee-project/cee/registry"
+	"github.com/cee-project/cee/stdlib"
 )
 
 // A complete no-code plugin: every action is a standard-library action,

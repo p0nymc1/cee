@@ -17,12 +17,12 @@ import (
 	"fmt"
 	"os"
 
-	"cee/execution"
-	"cee/intentrouter"
-	"cee/manifest"
-	"cee/registry"
-	"cee/sandbox"
-	"cee/stdlib"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
+	"github.com/cee-project/cee/manifest"
+	"github.com/cee-project/cee/registry"
+	"github.com/cee-project/cee/sandbox"
+	"github.com/cee-project/cee/stdlib"
 )
 
 // targetVersions is the sync target's own state -- the engine knows nothing

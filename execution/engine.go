@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 
-	"cee/entities"
+	"github.com/cee-project/cee/entities"
 )
 
 // CircuitBreakerTripped is returned when a step fails and no fallback policy

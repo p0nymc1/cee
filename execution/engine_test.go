@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"cee/entities"
+	"github.com/cee-project/cee/entities"
 )
 
 func TestRunsLinearLeafSteps(t *testing.T) {

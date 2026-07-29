@@ -6,9 +6,9 @@
 package registry
 
 import (
-	"cee/entities"
-	"cee/execution"
-	"cee/intentrouter"
+	"github.com/cee-project/cee/entities"
+	"github.com/cee-project/cee/execution"
+	"github.com/cee-project/cee/intentrouter"
 )
 
 // Domain is everything one domain plugin contributes to the shared runtime.

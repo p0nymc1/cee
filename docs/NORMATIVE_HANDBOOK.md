@@ -47,6 +47,15 @@
 - **为什么**：这是"引擎只认引用不认内容"的字面意义。一旦某个行业的假设混进引擎包，其他行业接入时就会遇到"看似通用实际上只适配了第一个行业"的问题。
 - **验证方法**：`registry/registry_test.go` 里的 `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` 是活文档——任何一次引擎改动之后，这个测试必须仍然只用两个词汇完全不重叠的领域（当前是 finance / security）就能验证通过，不需要为了让测试过而往引擎里加特殊分支。
 
+### 1.5 核心模块零外部依赖，依赖只能住在卫星 module
+
+核心 `cee` 模块（仓库根的 `go.mod`）**只允许依赖 Go 标准库**——`go.mod` 里必须没有任何 `require` 条目。这不是洁癖，而是这个项目可传播的卖点：任何人都能 `go build` 而不用信任、审计、拉取第三方代码。
+
+需要重型后端（容器运行时、E2B/云沙盒 SDK、WASM 运行时、向量数据库客户端……）的实现,**不允许进核心**,必须放进 `satellites/<名字>/` 下、带自己独立的 `go.mod`。因为 `go build ./...` 不会进入带自己 `go.mod` 的子目录,卫星的依赖永远到不了核心。卫星必须通过核心已有的接口（`execution.Prober`、`llminjector.Extractor`、`intentrouter.Vectorizer` 等）插入,不得要求核心为它改动。
+
+- **判据**：能用标准库 + 打 HTTP 端点解决的（如 `llmhttp`/`embedhttp` 打 OpenAI 兼容 API），留在核心；必须 vendor 某个 SDK 或 CGO/二进制运行时的，进卫星。
+- **Code Review 检查点**：任何给根 `go.mod` 添加 `require` 的 PR，一律打回,请改成卫星 module。`satellites/dockersandbox` 是参考样板。
+
 ## 2. 命名规范
 
 | 标识符 | 格式 | 示例 | 说明 |

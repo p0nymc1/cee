@@ -14,7 +14,7 @@ package stdlib
 import (
 	"fmt"
 
-	"cee/execution"
+	"github.com/cee-project/cee/execution"
 )
 
 // Factory builds a bound action from a step's declared parameters. It
