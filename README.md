@@ -130,6 +130,8 @@ go run ./cmd/cee lint      [catalog_dir]     # 校验整个 catalog 的完整性
 go run ./cmd/cee list      [catalog_dir]     # 列出 catalog 里的插件
 go run ./cmd/cee install   <name> [dir]      # 先校验再落盘，把插件 manifest 拉到 ./plugins
 go run ./cmd/cee bench     [catalog_dir]     # 跑基准，输出确定性排行榜
+go run ./cmd/cee draft     "<描述>"          # 用模型起草一份 workflow（需配 LLM 端点）
+go run ./cmd/cee serve     <manifest.json>   # 本地起 HTTP 端点试跑（仅 loopback、无认证）
 ```
 
 `cee bench` 的输出就是社区飞轮——把"比 Agent 高效"变成可攀比的榜单：

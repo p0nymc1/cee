@@ -19,9 +19,16 @@ import (
 	"github.com/p0nymc1/cee/bench"
 	"github.com/p0nymc1/cee/catalog"
 	"github.com/p0nymc1/cee/draft"
+	"github.com/p0nymc1/cee/execution"
+	"github.com/p0nymc1/cee/httpapi"
+	"github.com/p0nymc1/cee/intentrouter"
 	"github.com/p0nymc1/cee/llmhttp"
 	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/registry"
 	"github.com/p0nymc1/cee/stdlib"
+	"net"
+	"net/http"
+	"time"
 )
 
 const defaultCatalogDir = "catalog"
@@ -34,6 +41,8 @@ func main() {
 	switch os.Args[1] {
 	case "draft":
 		os.Exit(runDraft(os.Args[2:]))
+	case "serve":
+		os.Exit(runServe(os.Args[2:]))
 	case "validate":
 		os.Exit(runValidate(os.Args[2:]))
 	case "lint":
@@ -59,6 +68,7 @@ func usage() {
 
 usage:
   cee draft "<description>"          draft a workflow from a description
+  cee serve <manifest.json> [addr]   serve one manifest over HTTP (local trial)
   cee validate <manifest.json>       statically check one domain manifest
   cee lint [catalog_dir]             check a whole catalog's integrity
   cee list [catalog_dir]             list the plugins in a catalog
@@ -66,6 +76,10 @@ usage:
   cee bench [catalog_dir]            run benchmarks and print a leaderboard
 
 catalog_dir defaults to "catalog".
+
+cee serve is for trying a manifest out, not a deployment model: it runs with no
+authentication and an in-memory store, so it binds to loopback only. To deploy,
+mount httpapi.New in your own service with a real Identify and a durable Store.
 
 cee draft reads CEE_LLM_BASE_URL, CEE_LLM_MODEL and CEE_LLM_API_KEY. It prints
 a manifest only once that manifest validates -- review it, then save it.
@@ -258,4 +272,90 @@ func runDraft(args []string) int {
 	fmt.Fprintf(os.Stderr, "\nvalidated after %d attempt(s). Review it, then save and run:\n", len(result.Attempts))
 	fmt.Fprintln(os.Stderr, "  cee validate <file>")
 	return 0
+}
+
+// runServe starts a throwaway server for one manifest.
+//
+// Deliberately limited. It has no authentication and an in-memory store, which
+// is fine for poking a freshly drafted workflow with curl and wrong for
+// anything else -- so it refuses to listen anywhere but loopback rather than
+// letting a trial quietly become an unauthenticated execution endpoint on a
+// network.
+func runServe(args []string) int {
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "usage: cee serve <manifest.json> [addr]")
+		return 2
+	}
+	addr := "127.0.0.1:8080"
+	if len(args) == 2 {
+		addr = args[1]
+	}
+	if !isLoopback(addr) {
+		fmt.Fprintf(os.Stderr,
+			"cee serve: refusing to listen on %q.\n"+
+				"It serves unauthenticated, so it binds to loopback only. To expose CEE, mount\n"+
+				"httpapi.New in your own service with an Identify that authenticates.\n", addr)
+		return 2
+	}
+
+	data, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
+		return 2
+	}
+	// No Go hooks are available from a CLI, so only a pure L1 manifest can be
+	// served. Load says so plainly if the manifest needs more.
+	domain, err := manifest.Load(data, nil, stdlib.Default())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
+		return 1
+	}
+
+	router := intentrouter.NewRouter(0.34)
+	engine := execution.NewEngine(nil)
+	store := execution.NewMemoryStore()
+	engine.SetStore(store)
+	registry.NewRegistry(router, engine).RegisterDomain(*domain)
+
+	handler, err := httpapi.New(httpapi.Config{
+		Engine: engine,
+		// Explicit, not accidental: see the loopback check above.
+		AllowAnonymous: true,
+		Pending:        httpapi.MemoryPending{Store: store},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("serving %q on http://%s\n", domain.Name, addr)
+	fmt.Println("  unauthenticated, in-memory, loopback only — for trying it out")
+	for _, wf := range domain.Workflows {
+		fmt.Printf("\n  curl -s http://%s/v1/run -d '{\"workflow\":%q,\"context\":{}}'\n", addr, wf.WorkflowID)
+	}
+	fmt.Printf("\n  curl -s http://%s/v1/pending\n", addr)
+
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
+		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// isLoopback reports whether addr binds only to the local machine.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
