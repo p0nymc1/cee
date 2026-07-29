@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  # Lets a run be started by hand from the Actions tab or `gh workflow run`,
+  # which the push/PR triggers alone do not allow.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -49,3 +52,45 @@ jobs:
             echo "== $mod =="
             ( cd "$mod" && go build ./... && go vet ./... && go test ./... )
           done
+
+  # The job above proves the code compiles and its tests pass. This one runs
+  # the product: every example end to end, every shipped manifest through the
+  # validator, and the benchmark leaderboard. A green tick here means the
+  # thing demonstrably works, not merely that it builds -- and the run log is
+  # the artifact you read to see what it actually did.
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run the examples
+        run: |
+          for ex in security_monitoring human_approval meta_scenarios; do
+            echo "::group::examples/$ex"
+            go run "./examples/$ex"
+            echo "::endgroup::"
+          done
+
+      - name: Validate every shipped manifest
+        # Warnings are expected and allowed (an L2 plugin's Go hook cannot be
+        # resolved statically); a non-zero exit is not.
+        run: |
+          for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do
+            echo "::group::$m"
+            go run ./cmd/cee validate "$m"
+            echo "::endgroup::"
+          done
+
+      - name: Catalog listing and benchmark leaderboard
+        run: |
+          echo "::group::cee list"
+          go run ./cmd/cee list
+          echo "::endgroup::"
+          echo "::group::cee bench"
+          go run ./cmd/cee bench
+          echo "::endgroup::"
