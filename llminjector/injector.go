@@ -45,6 +45,22 @@ type Observer interface {
 	ObserveExtraction(schemaRef string)
 }
 
+// ResultObserver is an optional extension of Observer that also receives what
+// an extraction produced.
+//
+// It exists so a run that used a model can be replayed. An extraction is a
+// non-deterministic input in exactly the way a sandbox probe is -- ask the
+// model again tomorrow and it may answer differently -- so reproducing a run
+// means substituting what it answered at the time, not asking again. Counting
+// calls, which Observer alone allows, is not enough to do that.
+//
+// Kept separate from Observer rather than folded into it so existing
+// implementations (scorecard.Recorder) keep working untouched; the injector
+// type-asserts for it and skips the callback when it is absent.
+type ResultObserver interface {
+	ObserveExtractionResult(req entities.ExtractionRequest, result entities.ExtractionResult)
+}
+
 // Injector holds the schemas and extractors domains have registered.
 type Injector struct {
 	registrations map[string]registration
@@ -69,6 +85,16 @@ func (inj *Injector) RegisterSchema(schemaRef string, schema Schema, extractor E
 // output against the schema. Only schema-declared fields ever make it into
 // StructuredPayload.
 func (inj *Injector) Extract(req entities.ExtractionRequest) entities.ExtractionResult {
+	result := inj.extract(req)
+	// Reported on every path, success or failure alike: a run that failed to
+	// extract has to replay as a run that failed to extract.
+	if observer, ok := inj.observer.(ResultObserver); ok {
+		observer.ObserveExtractionResult(req, result)
+	}
+	return result
+}
+
+func (inj *Injector) extract(req entities.ExtractionRequest) entities.ExtractionResult {
 	reg, ok := inj.registrations[req.SchemaRef]
 	if !ok {
 		return entities.ExtractionResult{

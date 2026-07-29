@@ -41,14 +41,33 @@ type ProbeVerdict struct {
 	Err string `json:"error,omitempty"`
 }
 
+// ExtractionRecord is one model call and what it answered.
+//
+// An extraction is a non-deterministic input in exactly the way a probe
+// verdict is: ask the model again tomorrow and it may say something else. A
+// recording that captured only probes would leave any run that used a model
+// unreproducible -- the replay would call the model again and could diverge
+// for a reason that has nothing to do with the rule under test.
+type ExtractionRecord struct {
+	SchemaRef        string         `json:"schema_ref"`
+	DomainID         string         `json:"domain_id,omitempty"`
+	RawText          string         `json:"raw_text,omitempty"`
+	Success          bool           `json:"success"`
+	Payload          map[string]any `json:"payload,omitempty"`
+	ModelDerived     []string       `json:"model_derived,omitempty"`
+	ValidationErrors []string       `json:"validation_errors,omitempty"`
+}
+
 // Recording is one execution captured in enough detail to run again.
 // It is plain JSON so a run can be kept next to the incident it belongs to.
 type Recording struct {
 	WorkflowID string         `json:"workflow_id"`
 	Input      map[string]any `json:"input"`
 	Probes     []ProbeVerdict `json:"probes,omitempty"`
-	Trace      []string       `json:"trace"`
-	Output     map[string]any `json:"output"`
+	// Extractions are the model calls the run made, in order.
+	Extractions []ExtractionRecord `json:"extractions,omitempty"`
+	Trace       []string           `json:"trace"`
+	Output      map[string]any     `json:"output"`
 	// Suspended records whether the run parked. The pointer itself is not
 	// kept: it is freshly minted every time, so comparing it would report a
 	// difference on every replay of a perfectly reproducible run.
@@ -60,9 +79,10 @@ type Recording struct {
 
 // Recorder wraps the real sandbox and remembers what it answered.
 type Recorder struct {
-	mu       sync.Mutex
-	inner    Prober
-	verdicts []ProbeVerdict
+	mu          sync.Mutex
+	inner       Prober
+	verdicts    []ProbeVerdict
+	extractions []ExtractionRecord
 }
 
 // Prober is execution.Prober, restated so this package does not import
@@ -109,13 +129,14 @@ func (r *Recorder) Finish(workflowID string, input map[string]any, result entiti
 	defer r.mu.Unlock()
 
 	rec := Recording{
-		WorkflowID: workflowID,
-		Input:      cloneMap(input),
-		Probes:     append([]ProbeVerdict(nil), r.verdicts...),
-		Trace:      append([]string(nil), result.Trace...),
-		Output:     cloneMap(result.Output),
-		Suspended:  result.StatePointer != "",
-		RecordedAt: time.Now().UTC(),
+		WorkflowID:  workflowID,
+		Input:       cloneMap(input),
+		Probes:      append([]ProbeVerdict(nil), r.verdicts...),
+		Extractions: append([]ExtractionRecord(nil), r.extractions...),
+		Trace:       append([]string(nil), result.Trace...),
+		Output:      cloneMap(result.Output),
+		Suspended:   result.StatePointer != "",
+		RecordedAt:  time.Now().UTC(),
 	}
 	if runErr != nil {
 		rec.Failed = true
@@ -131,9 +152,10 @@ func (r *Recorder) Finish(workflowID string, input map[string]any, result entiti
 // the useful behaviour when you are deliberately changing a rule to see what
 // moves.
 type Player struct {
-	mu        sync.Mutex
-	byRef     map[string][]ProbeVerdict
-	unmatched []string
+	mu          sync.Mutex
+	byRef       map[string][]ProbeVerdict
+	extractions map[string][]ExtractionRecord
+	unmatched   []string
 	// Fallback answers probes the recording never saw. Leave it nil to have
 	// those reported instead of silently invented.
 	Fallback Prober
@@ -144,7 +166,11 @@ func NewPlayer(rec Recording) *Player {
 	for _, v := range rec.Probes {
 		byRef[v.ProbeRef] = append(byRef[v.ProbeRef], v)
 	}
-	return &Player{byRef: byRef}
+	extractions := make(map[string][]ExtractionRecord, len(rec.Extractions))
+	for _, e := range rec.Extractions {
+		extractions[e.SchemaRef] = append(extractions[e.SchemaRef], e)
+	}
+	return &Player{byRef: byRef, extractions: extractions}
 }
 
 func (p *Player) Probe(req entities.ProbeRequest) (entities.ProbeResult, error) {
@@ -280,4 +306,59 @@ func cloneMap(m map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// ObserveExtraction satisfies the base llminjector.Observer, which SetObserver
+// requires. Counting calls is scorecard's job; everything this package needs
+// arrives through ObserveExtractionResult below.
+func (r *Recorder) ObserveExtraction(string) {}
+
+// ObserveExtractionResult satisfies llminjector.ResultObserver structurally,
+// so this package records model calls without importing llminjector and stays
+// a leaf. Attach the same Recorder to the injector and the engine, and one
+// recording covers both halves of a run.
+func (r *Recorder) ObserveExtractionResult(req entities.ExtractionRequest, result entities.ExtractionResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.extractions = append(r.extractions, ExtractionRecord{
+		SchemaRef:        req.SchemaRef,
+		DomainID:         req.DomainID,
+		RawText:          req.RawText,
+		Success:          result.Success,
+		Payload:          cloneMap(result.StructuredPayload),
+		ModelDerived:     append([]string(nil), result.ModelDerived...),
+		ValidationErrors: append([]string(nil), result.ValidationErrors...),
+	})
+}
+
+// ExtractorFor returns a stand-in extractor that answers from the recording
+// instead of calling the model. Register it against the same schema reference
+// during a replay -- it has the shape of llminjector.Extractor.
+//
+// A recorded failure replays as a failure: reproducing a run means reproducing
+// what happened, and a successful extraction where the original failed would
+// send the replay down a path the original never took.
+func (p *Player) ExtractorFor(schemaRef string) func(rawText string) (map[string]any, error) {
+	return func(string) (map[string]any, error) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		queued := p.extractions[schemaRef]
+		if len(queued) == 0 {
+			p.unmatched = append(p.unmatched, "extraction:"+schemaRef)
+			return nil, fmt.Errorf("replay: the recording holds no extraction for schema %q", schemaRef)
+		}
+		rec := queued[0]
+		if len(queued) > 1 {
+			p.extractions[schemaRef] = queued[1:]
+		}
+		if !rec.Success {
+			reason := "extraction failed"
+			if len(rec.ValidationErrors) > 0 {
+				reason = rec.ValidationErrors[0]
+			}
+			return nil, fmt.Errorf("%s", reason)
+		}
+		return cloneMap(rec.Payload), nil
+	}
 }

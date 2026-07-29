@@ -9,6 +9,7 @@ import (
 
 	"github.com/p0nymc1/cee/entities"
 	"github.com/p0nymc1/cee/execution"
+	"github.com/p0nymc1/cee/llminjector"
 	"github.com/p0nymc1/cee/replay"
 )
 
@@ -345,5 +346,136 @@ func TestFallbackAnswersProbesTheRecordingLacks(t *testing.T) {
 	}
 	if len(player.Unmatched()) != 1 {
 		t.Fatal("a fallback answer is still a gap in the recording and should be reported")
+	}
+}
+
+// A run that used a model was only half reproducible before: the engine's
+// probes were on the record, and the extraction was not, so a replay called
+// the model again and could diverge for a reason unrelated to the rule under
+// test.
+
+func extractorReturning(payload map[string]any) llminjector.Extractor {
+	return func(string) (map[string]any, error) { return payload, nil }
+}
+
+// The one that carries the argument: the model changes its answer, and the
+// replay does not notice, because it is replaying what happened rather than
+// asking again.
+func TestReplayUsesTheRecordedExtractionNotTheModel(t *testing.T) {
+	inj := llminjector.NewInjector()
+	rec := replay.NewRecorder(nil)
+	inj.SetObserver(rec)
+	inj.RegisterSchema("finance.expense", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		extractorReturning(map[string]any{"amount": 4200.0}))
+
+	req := entities.ExtractionRequest{RawText: "taxi $4200", SchemaRef: "finance.expense"}
+	original := inj.Extract(req)
+	if original.StructuredPayload["amount"] != 4200.0 {
+		t.Fatalf("precondition: expected 4200, got %v", original.StructuredPayload)
+	}
+	recording := rec.Finish("w", nil, entities.WorkflowResult{}, nil)
+	if len(recording.Extractions) != 1 {
+		t.Fatalf("the extraction should be on the record, got %+v", recording.Extractions)
+	}
+
+	// The model now reads the same document as $99. A replay must not care.
+	player := replay.NewPlayer(recording)
+	replayInj := llminjector.NewInjector()
+	replayInj.RegisterSchema("finance.expense", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		player.ExtractorFor("finance.expense"))
+
+	replayed := replayInj.Extract(req)
+	if replayed.StructuredPayload["amount"] != 4200.0 {
+		t.Fatalf("replay should reproduce the recorded 4200, got %v", replayed.StructuredPayload)
+	}
+}
+
+// Reproducing a run means reproducing what happened. A successful extraction
+// where the original failed would send the replay down a path the original
+// never took.
+func TestARecordedExtractionFailureReplaysAsAFailure(t *testing.T) {
+	inj := llminjector.NewInjector()
+	rec := replay.NewRecorder(nil)
+	inj.SetObserver(rec)
+	// The schema wants an amount; the model returns nothing usable.
+	inj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		extractorReturning(map[string]any{"merchant": "acme"}))
+
+	req := entities.ExtractionRequest{RawText: "x", SchemaRef: "s"}
+	if inj.Extract(req).Success {
+		t.Fatal("precondition: this extraction should have failed validation")
+	}
+	recording := rec.Finish("w", nil, entities.WorkflowResult{}, nil)
+
+	player := replay.NewPlayer(recording)
+	replayInj := llminjector.NewInjector()
+	// A model that would now succeed must not rescue the replay.
+	replayInj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		player.ExtractorFor("s"))
+
+	if replayInj.Extract(req).Success {
+		t.Fatal("a recorded failure must replay as a failure")
+	}
+}
+
+func TestProvenanceIsKeptOnTheRecord(t *testing.T) {
+	inj := llminjector.NewInjector()
+	rec := replay.NewRecorder(nil)
+	inj.SetObserver(rec)
+	inj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		extractorReturning(map[string]any{"amount": 1.0}))
+
+	inj.Extract(entities.ExtractionRequest{SchemaRef: "s"})
+	recording := rec.Finish("w", nil, entities.WorkflowResult{}, nil)
+
+	// Which fields a model produced is part of what happened, and a replayed
+	// run has to reach the same verified-input gates as the original.
+	got := recording.Extractions[0].ModelDerived
+	if len(got) != 1 || got[0] != "amount" {
+		t.Fatalf("provenance should survive into the recording, got %v", got)
+	}
+}
+
+// A replay that asks for an extraction the recording never captured has gone
+// somewhere the original did not, and is told so rather than quietly calling
+// a model.
+func TestUnrecordedExtractionIsRefusedAndReported(t *testing.T) {
+	player := replay.NewPlayer(replay.Recording{WorkflowID: "w"})
+
+	if _, err := player.ExtractorFor("never.seen")("text"); err == nil {
+		t.Fatal("an extraction with no record must not be invented")
+	}
+	got := player.Unmatched()
+	if len(got) != 1 || !strings.Contains(got[0], "never.seen") {
+		t.Fatalf("the gap should be reported, got %v", got)
+	}
+}
+
+// Both halves of a run land in one recording, so the file is the whole story.
+func TestOneRecordingCoversProbesAndExtractionsTogether(t *testing.T) {
+	rec := replay.NewRecorder(proberFunc(func(entities.ProbeRequest) (entities.ProbeResult, error) {
+		return entities.ProbeResult{Healthy: true}, nil
+	}))
+
+	inj := llminjector.NewInjector()
+	inj.SetObserver(rec)
+	inj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
+		extractorReturning(map[string]any{"amount": 1.0}))
+	inj.Extract(entities.ExtractionRequest{SchemaRef: "s"})
+
+	engine := execution.NewEngine(rec)
+	engine.RegisterWorkflow(&execution.Workflow{
+		WorkflowID: "w", EntryStepID: "gated",
+		Steps: map[string]execution.Step{
+			"gated": &execution.LeafStep{StepID: "gated", SandboxProbeRef: "check",
+				Run: func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil }},
+		},
+	})
+	result, err := engine.Run("w", map[string]any{})
+	recording := rec.Finish("w", map[string]any{}, result, err)
+
+	if len(recording.Extractions) != 1 || len(recording.Probes) != 1 {
+		t.Fatalf("expected one of each, got %d extractions and %d probes",
+			len(recording.Extractions), len(recording.Probes))
 	}
 }
