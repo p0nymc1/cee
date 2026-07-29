@@ -55,33 +55,69 @@ flowchart TB
 
 完整设计见 [`docs/TECHNICAL_SPECIFICATION.md`](docs/TECHNICAL_SPECIFICATION.md)。
 
-## 快速开始
+## 接入你自己的系统
+
+**CEE 是一个库，不是一个服务。** 仓库里没有任何东西监听端口——你已有的 HTTP handler 或消息消费者调 `engine.Run(...)` 拿结果，引擎是活在你进程里的一台状态机，不是你要额外部署的东西。
+
+```bash
+go get github.com/p0nymc1/cee@v0.1.0
+```
+
+依赖树就两行：你自己 + CEE。核心模块**零第三方依赖**。
+
+完整可运行的最小接入见 [`examples/quickstart`](examples/quickstart/main.go)（一个退款台：小额自动放行、大额挂起等经理、账户已关闭则根本不放款）。它跟仓库一起编译和测试，所以不会腐烂成一段编译不过的片段。
+
+```bash
+go run ./examples/quickstart
+```
+```
+acct-100  $20     -> paid
+acct-100  $500    -> parked for a manager (pointer …)
+acct-991  $20     -> held: account acct-991 is closed; the refund would bounce
+```
+
+三种结果里只有第一种是普通控制流，另外两种是 CEE 存在的理由：
+
+- **挂起不是失败**。等经理审批时流程存档、返回一个恢复指针，断路器不会看到它；决定到达后 `engine.Resume(pointer, ...)` 从中断处继续。换成 `filestore.New(dir)` 就能跨进程重启存活。
+- **探针在动作之前跑**。账户已关闭这件事是在放款**执行前**被只读探针拦下的，钱根本没动，且拒绝原因会带给运维：
+
+```go
+sb.RegisterProbe("refund.account_open", func(ctx map[string]any) (bool, string, error) {
+    if closedAccounts[ctx["account"].(string)] {
+        return false, "account is closed; the refund would bounce", nil
+    }
+    return true, "", nil
+})
+```
+
+接入建议按这个顺序：挑一个你半夜会担心的不可逆操作 → 包成 workflow → 给它加探针 → **故意让探针拒绝一次，亲眼确认动作没执行**。最后一步比读任何文档都能说明这东西在干什么。
+
+### 什么时候不该用
+
+流程真的需要开放式推理时不该用——CEE 整套设计就是不让模型做决定，那种场景它只会碍事。只想跑定时任务是 cron 的活；需要分布式持久化编排和重试语义是 Temporal 的活，CEE 不做这个。
+
+### 现在还缺的
+
+- **没有现成的服务形态**，要 HTTP API 得自己写。
+- **恢复指针是无记名凭证**：谁拿到 `StatePointer` 谁就能批准那笔操作，引擎侧没有认证授权。进程内传没问题，放进 URL 之前必须先设计权限模型。
+- **L2 插件不能热加载**：需要 Go hook 的插件要编译进你的二进制，改了得重新发版；只有纯 JSON 的 L1 插件能当数据分发。
+
+## 本地跑起来看看
 
 需要 Go 1.22+（仓库按 1.26 工具链开发，语法向下兼容到 1.22）。
 
 ```bash
-go build ./...     # 编译全部包
-go test ./...       # 跑全部测试
-go vet ./...
+go build ./... && go vet ./... && go test ./...
 ```
-
-跑两个端到端范例，直接看到实时 Scorecard：
 
 ```bash
-# L2（有 Go 代码）：网络安全监测 —— 意图匹配 ATT&CK、沙盒门禁、断路器降级人工审批
-go run ./examples/security_monitoring
-
-# L1（零 Go 代码）：审批流挂起/恢复 —— 整条流程就是一份 JSON manifest
-go run ./examples/human_approval
+go run ./examples/crypto_surveillance   # 实时行情异常监控（会联网）
+go run ./examples/network_detection      # ATT&CK 匹配 + 处置爆炸半径护栏
+go run ./examples/human_approval         # L1 零 Go：挂起/恢复
+go run ./examples/meta_scenarios         # 工单路由 / 调度 / 数据同步
 ```
 
-`security_monitoring` 的输出片段：
-
-```
-matched technique security.T1110_brute_force (confidence 0.62) -> entering workflow security.contain_threat
-outcome: containment held for human approval (breaker downgraded, critical asset protected)
-scorecard[...]: determinism 100% (2 deterministic steps, 0 LLM calls), 1 sandbox probes, 1 breaker trips; vs a per-step agent this eliminated 2 LLM calls
-```
+每个示例的真实输出都在 **https://p0nymc1.github.io/cee/** 上，由 CI 每小时重跑生成——不是手写的。
 
 ## 命令行工具
 
