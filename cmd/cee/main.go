@@ -14,9 +14,12 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/p0nymc1/cee/bench"
 	"github.com/p0nymc1/cee/catalog"
+	"github.com/p0nymc1/cee/draft"
+	"github.com/p0nymc1/cee/llmhttp"
 	"github.com/p0nymc1/cee/manifest"
 	"github.com/p0nymc1/cee/stdlib"
 )
@@ -29,6 +32,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "draft":
+		os.Exit(runDraft(os.Args[2:]))
 	case "validate":
 		os.Exit(runValidate(os.Args[2:]))
 	case "lint":
@@ -53,6 +58,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `cee - Cognitive Execution Engine tooling
 
 usage:
+  cee draft "<description>"          draft a workflow from a description
   cee validate <manifest.json>       statically check one domain manifest
   cee lint [catalog_dir]             check a whole catalog's integrity
   cee list [catalog_dir]             list the plugins in a catalog
@@ -60,6 +66,9 @@ usage:
   cee bench [catalog_dir]            run benchmarks and print a leaderboard
 
 catalog_dir defaults to "catalog".
+
+cee draft reads CEE_LLM_BASE_URL, CEE_LLM_MODEL and CEE_LLM_API_KEY. It prints
+a manifest only once that manifest validates -- review it, then save it.
 `)
 }
 
@@ -202,5 +211,51 @@ func runBench(args []string) int {
 		return 0
 	}
 	fmt.Print(bench.FormatLeaderboard(results))
+	return 0
+}
+
+// runDraft turns a description into a workflow the engine could run.
+//
+// It prints to stdout and saves nothing. A drafted workflow is a proposal: the
+// point of moving the model to design time is that a person reads the plan
+// before it can execute, and writing the file here would quietly skip that.
+func runDraft(args []string) int {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		fmt.Fprintln(os.Stderr, `usage: cee draft "<description of the process>"`)
+		return 2
+	}
+
+	baseURL := os.Getenv("CEE_LLM_BASE_URL")
+	model := os.Getenv("CEE_LLM_MODEL")
+	if baseURL == "" || model == "" {
+		fmt.Fprintln(os.Stderr, "cee draft: set CEE_LLM_BASE_URL and CEE_LLM_MODEL")
+		fmt.Fprintln(os.Stderr, "  e.g. CEE_LLM_BASE_URL=https://api.openai.com/v1 CEE_LLM_MODEL=gpt-4o-mini")
+		return 2
+	}
+
+	cfg := draft.Config{
+		LLM: llmhttp.Config{
+			BaseURL: baseURL,
+			Model:   model,
+			APIKey:  os.Getenv("CEE_LLM_API_KEY"),
+		},
+	}
+
+	result, err := draft.Draft(cfg, args[0], stdlib.Default())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee draft: %v\n", err)
+		// The rejected attempts are the useful artifact when a description
+		// turns out to be too vague to express as a workflow.
+		for i, attempt := range result.Attempts {
+			if len(attempt.Manifest) > 0 {
+				fmt.Fprintf(os.Stderr, "\n--- attempt %d ---\n%s\n", i+1, draft.Pretty(attempt.Manifest))
+			}
+		}
+		return 1
+	}
+
+	os.Stdout.Write(draft.Pretty(result.Manifest))
+	fmt.Fprintf(os.Stderr, "\nvalidated after %d attempt(s). Review it, then save and run:\n", len(result.Attempts))
+	fmt.Fprintln(os.Stderr, "  cee validate <file>")
 	return 0
 }
