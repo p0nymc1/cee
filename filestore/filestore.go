@@ -18,10 +18,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/p0nymc1/cee/execution"
 )
+
+// claimExt marks a file as claimed-but-not-yet-released. checkPointer rejects
+// ".", so a claim name can never be mistaken for a live pointer.
+const claimExt = ".claimed"
 
 // Store persists suspended workflows under a directory. Safe for concurrent
 // use within a process; across processes, writes are atomic (write to a
@@ -149,9 +155,10 @@ func (s *Store) Delete(pointer string) error {
 // by two replicas that both accepted the same resume link. A read-then-delete
 // would let both read before either deleted.
 //
-// The claimed file is removed once decoded. If the process dies between the
-// rename and the delete, the leftover is named so that Pending skips it: a
-// crash loses one parked run rather than resurrecting a consumed pointer.
+// The claim is held, not discarded: Release removes it once the resumed run
+// has finished. So a claim still present afterwards is the trace of a process
+// that took a run and died before completing it, which Orphaned reports.
+// Pending skips claims, so a claimed run never looks parked again.
 func (s *Store) Consume(pointer string) (execution.State, error) {
 	if err := checkPointer(pointer); err != nil {
 		return execution.State{}, err
@@ -166,7 +173,7 @@ func (s *Store) Consume(pointer string) (execution.State, error) {
 	}
 	// checkPointer rejects ".", so a claim name can never collide with, or
 	// be mistaken for, a live pointer.
-	claim := s.path(pointer) + "." + suffix + ".claimed"
+	claim := s.path(pointer) + "." + suffix + claimExt
 
 	if err := os.Rename(s.path(pointer), claim); err != nil {
 		if os.IsNotExist(err) {
@@ -174,8 +181,10 @@ func (s *Store) Consume(pointer string) (execution.State, error) {
 		}
 		return execution.State{}, fmt.Errorf("filestore: could not claim state %q: %w", pointer, err)
 	}
-	defer os.Remove(claim)
-
+	// The claim is deliberately NOT removed here. It is removed by Release,
+	// once the resumed run has actually finished. A claim still sitting here
+	// afterwards means a process took this run and died before finishing it,
+	// which Orphaned surfaces.
 	data, err := os.ReadFile(claim)
 	if err != nil {
 		return execution.State{}, fmt.Errorf("filestore: could not read claimed state %q: %w", pointer, err)
@@ -185,6 +194,85 @@ func (s *Store) Consume(pointer string) (execution.State, error) {
 		return execution.State{}, fmt.Errorf("filestore: state %q is corrupt: %w", pointer, err)
 	}
 	return state, nil
+}
+
+// Release discards the claim taken by Consume, once the resumed run has
+// finished. Releasing a pointer that was never claimed is not an error: the
+// engine releases on every path out of a resume, including ones where the
+// claim never happened, and failing there would turn tidy-up into noise.
+func (s *Store) Release(pointer string) error {
+	if err := checkPointer(pointer); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	claims, err := filepath.Glob(s.path(pointer) + ".*" + claimExt)
+	if err != nil {
+		return fmt.Errorf("filestore: could not look up claims for %q: %w", pointer, err)
+	}
+	for _, claim := range claims {
+		if err := os.Remove(claim); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("filestore: could not release claim for %q: %w", pointer, err)
+		}
+	}
+	return nil
+}
+
+// Orphan is a run that was claimed and never released -- the trace a process
+// leaves when it dies mid-resume.
+type Orphan struct {
+	Pointer   string
+	ClaimedAt time.Time
+	State     execution.State
+}
+
+// Orphaned lists claims older than minAge that were never released.
+//
+// It reports; it does not requeue. Putting a claimed run back automatically
+// would re-run a workflow whose side effects may already have landed --
+// the money moved, the host was isolated -- and the engine has no idempotency
+// to make that safe. So this hands an operator the facts (which run, parked
+// for what reason, claimed when) and lets them decide. Use a minAge
+// comfortably longer than the longest workflow, or in-flight runs will be
+// reported as orphans.
+func (s *Store) Orphaned(minAge time.Duration) ([]Orphan, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	claims, err := filepath.Glob(filepath.Join(s.dir, "*"+claimExt))
+	if err != nil {
+		return nil, fmt.Errorf("filestore: could not list claims: %w", err)
+	}
+
+	cutoff := time.Now().Add(-minAge)
+	var orphans []Orphan
+	for _, claim := range claims {
+		info, err := os.Stat(claim)
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		var state execution.State
+		if data, err := os.ReadFile(claim); err == nil {
+			_ = json.Unmarshal(data, &state) // a corrupt claim still counts as an orphan
+		}
+		orphans = append(orphans, Orphan{
+			Pointer:   pointerFromClaim(filepath.Base(claim)),
+			ClaimedAt: info.ModTime(),
+			State:     state,
+		})
+	}
+	return orphans, nil
+}
+
+// pointerFromClaim recovers the original pointer from "<pointer>.<rand>.claimed".
+func pointerFromClaim(name string) string {
+	trimmed := strings.TrimSuffix(name, claimExt)
+	if i := strings.LastIndex(trimmed, "."); i >= 0 {
+		return trimmed[:i]
+	}
+	return trimmed
 }
 
 // claimSuffix makes a claim filename unique so two racing claims of

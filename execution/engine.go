@@ -421,6 +421,15 @@ func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.Wor
 	}
 
 	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, merge(claimed.Ctx, resolution), 0)
+
+	// Release on every path out, success or failure alike: either way the
+	// decision has been acted on, and a claim left behind would later read as
+	// a run that never finished. Only a process that dies in runFrom skips
+	// this -- which is exactly the case the held claim exists to record.
+	if releaseErr := e.store.Release(pointer); releaseErr != nil && err == nil {
+		return result, fmt.Errorf("run finished but its claim could not be released: %w", releaseErr)
+	}
+
 	result.Trace = append(append([]string{}, claimed.Trace...), result.Trace...)
 	return result, err
 }

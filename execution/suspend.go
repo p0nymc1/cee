@@ -76,7 +76,23 @@ type Store interface {
 	// looks correct and silently permits a decision to be applied twice
 	// under concurrency. Making the atomic operation the only operation
 	// means an implementation cannot get that wrong by accident.
+	//
+	// Consume claims but does not discard: the claim is held until Release.
+	// A process that dies between the two leaves a claim behind on purpose,
+	// so a run that was taken and never finished is discoverable afterwards
+	// instead of vanishing.
 	Consume(pointer string) (State, error)
+
+	// Release discards a claim once the resumed run has finished, whether it
+	// finished successfully or not -- either way the decision has been acted
+	// on and must not be acted on again.
+	//
+	// A claim that is never released is the signature of a process that died
+	// mid-run. Implementations should keep those visible rather than
+	// requeueing them: the engine offers no idempotency, so re-running a
+	// workflow whose side effects may already have landed is worse than
+	// telling an operator that one needs a decision.
+	Release(pointer string) error
 }
 
 // MemoryStore is the default Store: process-local and safe for concurrent
@@ -130,6 +146,12 @@ func (m *MemoryStore) Consume(pointer string) (State, error) {
 	delete(m.states, pointer)
 	return state, nil
 }
+
+// Release is a no-op here. The two-phase claim exists so a claim outlives the
+// process that took it; this store dies with its process, so there is nothing
+// a held claim could later be recovered from. Pretending otherwise would
+// offer a durability guarantee an in-memory map cannot keep.
+func (m *MemoryStore) Release(string) error { return nil }
 
 // Pending lists the pointers currently held, for operator tooling.
 func (m *MemoryStore) Pending() []State {

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/p0nymc1/cee/execution"
 )
@@ -394,5 +395,158 @@ func TestConcurrentResumeAppliesTheDecisionOnce(t *testing.T) {
 
 	if got := atomic.LoadInt64(&applied); got != 1 {
 		t.Fatalf("the decision was applied %d times; it must be applied exactly once", got)
+	}
+}
+
+// A claim is held until the run finishes. These cover the gap that motivated
+// it: before, Consume discarded the state immediately, so a process dying
+// mid-resume took the parked run with it and left no trace.
+
+func TestClaimIsHeldUntilReleased(t *testing.T) {
+	store, dir := newStore(t)
+	if err := store.Save(sampleState("abc123")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := store.Consume("abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Claimed, so it must not look parked any more...
+	pending, err := store.Pending()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a claimed run must not still read as pending, got %d", len(pending))
+	}
+	// ...but the state must still be on disk, not discarded.
+	claims, _ := filepath.Glob(filepath.Join(dir, "*.claimed"))
+	if len(claims) != 1 {
+		t.Fatalf("expected the claim to be held on disk, found %d", len(claims))
+	}
+
+	if err := store.Release("abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	claims, _ = filepath.Glob(filepath.Join(dir, "*.claimed"))
+	if len(claims) != 0 {
+		t.Fatalf("Release must discard the claim, %d left", len(claims))
+	}
+}
+
+// Releasing something never claimed is tidy-up, not an error: the engine
+// releases on every path out of a resume.
+func TestReleaseOfAnUnclaimedPointerIsNotAnError(t *testing.T) {
+	store, _ := newStore(t)
+	if err := store.Release("neverclaimed"); err != nil {
+		t.Fatalf("expected a no-op, got %v", err)
+	}
+}
+
+// The signature of a process that died mid-resume.
+func TestOrphanedReportsAClaimNeverReleased(t *testing.T) {
+	store, _ := newStore(t)
+	if err := store.Save(sampleState("abc123")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := store.Consume("abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The process dies here: no Release follows.
+
+	// Not yet old enough to count.
+	fresh, err := store.Orphaned(time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fresh) != 0 {
+		t.Fatalf("an in-flight run must not be reported as an orphan, got %d", len(fresh))
+	}
+
+	orphans, err := store.Orphaned(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan, got %d", len(orphans))
+	}
+	if orphans[0].Pointer != "abc123" {
+		t.Fatalf("the orphan must name its pointer, got %q", orphans[0].Pointer)
+	}
+	// An operator needs to know what it was waiting on to decide anything.
+	if orphans[0].State.Reason != "awaiting manager decision" {
+		t.Fatalf("the orphan must carry its reason, got %q", orphans[0].State.Reason)
+	}
+	if orphans[0].ClaimedAt.IsZero() {
+		t.Fatal("the orphan must carry when it was claimed")
+	}
+}
+
+func TestReleasedRunIsNotAnOrphan(t *testing.T) {
+	store, _ := newStore(t)
+	if err := store.Save(sampleState("abc123")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := store.Consume("abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := store.Release("abc123"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	orphans, err := store.Orphaned(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("a completed run must leave no orphan, got %d", len(orphans))
+	}
+}
+
+// End to end: the engine releases on its own, so a normal resume leaves
+// nothing behind, and an orphan really does mean something went wrong.
+func TestEngineReleasesAfterAResume(t *testing.T) {
+	_, dir := newStore(t)
+	store, err := New(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	engine := execution.NewEngine(nil)
+	engine.SetStore(store)
+	engine.RegisterWorkflow(&execution.Workflow{
+		WorkflowID:  "ops.approve",
+		EntryStepID: "hold",
+		Steps: map[string]execution.Step{
+			"hold": &execution.LeafStep{
+				StepID:    "hold",
+				OnSuccess: "act",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return execution.Suspend("awaiting human approval")
+				},
+			},
+			"act": &execution.LeafStep{
+				StepID: "act",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return map[string]any{"done": true}, nil
+				},
+			},
+		},
+	})
+
+	parked, err := engine.Run("ops.approve", map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := engine.Resume(parked.StatePointer, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	orphans, err := store.Orphaned(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("a resume that completed must release its claim, got %d orphans", len(orphans))
 	}
 }
