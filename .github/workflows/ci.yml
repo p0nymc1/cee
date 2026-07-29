@@ -67,6 +67,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # This module has no external dependencies, so there is no go.sum to
+          # key a dependency cache on. Leaving the cache enabled makes every
+          # run emit a "Restore cache failed" annotation for a file that is
+          # deliberately absent (handbook rule 1.5).
+          cache: false
 
       - name: Run the examples
         run: |
