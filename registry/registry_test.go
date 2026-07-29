@@ -86,3 +86,27 @@ func TestTwoUnrelatedDomainsCoexistWithoutEngineChanges(t *testing.T) {
 		t.Fatalf("expected 2 registered domains, got %v", domains)
 	}
 }
+
+func TestRegisterDomainStampsWorkflowsWithTheirDomain(t *testing.T) {
+	workflow := &execution.Workflow{
+		WorkflowID:  "security.contain_threat",
+		EntryStepID: "contain",
+		Steps: map[string]execution.Step{
+			"contain": &execution.LeafStep{
+				StepID: "contain",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return map[string]any{"contained": true}, nil
+				},
+			},
+		},
+	}
+
+	reg := NewRegistry(intentrouter.NewRouter(0.5), execution.NewEngine(nil))
+	reg.RegisterDomain(Domain{Name: "security", Workflows: []*execution.Workflow{workflow}})
+
+	// The domain author never wrote DomainID: registering is what binds a
+	// workflow to its domain, so the two can never disagree.
+	if workflow.DomainID != "security" {
+		t.Fatalf("expected registration to stamp DomainID=security, got %q", workflow.DomainID)
+	}
+}

@@ -67,9 +67,14 @@ type CircuitBreakerPolicy struct {
 	FallbackStepRef string
 }
 
-// Workflow is a Step DAG plus its entry point.
+// Workflow is a Step DAG plus its entry point. DomainID names the domain
+// that contributed it and is passed through to sandbox probes so a prober
+// can scope itself per domain; registry.RegisterDomain stamps it from the
+// domain's own name, so a workflow registered directly on the Engine (as in
+// tests) simply carries no domain.
 type Workflow struct {
 	WorkflowID  string
+	DomainID    string
 	EntryStepID string
 	Steps       map[string]Step
 }
@@ -149,7 +154,7 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 				}
 				probeResult, err := e.sandbox.Probe(entities.ProbeRequest{
 					ProbeRef:    s.SandboxProbeRef,
-					DomainID:    workflowRef,
+					DomainID:    workflow.DomainID,
 					StepContext: ctx,
 				})
 				if err != nil || !probeResult.Healthy {

@@ -40,7 +40,9 @@ flowchart TB
 | `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
 | `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
 | `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
-| `manifest` | 声明式加载器：把 JSON 描述的 DAG 拓扑绑定到 Go 具名函数 | `Load`、`Hooks`、`File`、`IntentSpec`、`PolicySpec`、`WorkflowSpec`、`StepSpec` |
+| `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`） |
+| `manifest` | 声明式加载器 + 静态校验器：把 JSON DAG 绑定到标准动作/Go 具名函数，并可在运行前静态校验引用完整性 | `Load`、`Validate`、`Report`、`Hooks`、`File`、`StepSpec` 等 |
+| `cmd/cee` | 命令行工具：`cee validate <manifest.json>` 把规范红线做成自动化闸门（CI 可用） | — |
 
 ## 3. 核心实体模型（`entities` 包）
 

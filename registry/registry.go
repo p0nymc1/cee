@@ -36,6 +36,10 @@ func (r *Registry) RegisterDomain(domain Domain) {
 		r.router.RegisterNode(node)
 	}
 	for _, workflow := range domain.Workflows {
+		// The domain name is the single source of truth: stamp it rather
+		// than asking domain authors to repeat it on every workflow, so a
+		// workflow can never disagree with the domain that contributed it.
+		workflow.DomainID = domain.Name
 		r.engine.RegisterWorkflow(workflow)
 	}
 	for _, policy := range domain.Policies {

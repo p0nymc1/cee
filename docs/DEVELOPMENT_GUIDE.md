@@ -126,13 +126,39 @@ hooks := manifest.Hooks{
     "finance.queue_human_review":  queueHumanReviewAction,
 }
 
-domain, err := manifest.Load(manifestJSONBytes, hooks)
+// 第三个参数是标准动作库；manifest 里的 action_ref 会先在标准库里找，
+// 找不到再在 hooks 里找。两者都可为 nil。
+domain, err := manifest.Load(manifestJSONBytes, hooks, stdlib.Default())
 if err != nil {
-    // manifest 引用了一个 hooks 里不存在的 action_ref，或 JSON 格式错误，或
-    // composite step 缺 sub_workflow_ref —— Load 会明确报错，不会静默生成半个 Domain
+    // manifest 引用了一个标准库和 hooks 里都不存在的 action_ref，或 JSON 格式错误，
+    // 或 composite step 缺 sub_workflow_ref —— Load 会明确报错，不会静默生成半个 Domain
 }
 reg.RegisterDomain(*domain)
 ```
+
+### 方式二·补充：纯声明式（零 Go）
+
+如果一个流程只用到标准动作库里的通用动作（`std.set`/`std.require`/`std.rule_check`），那么 `hooks` 传 `nil` 即可，插件作者一行 Go 都不用写——这就是社区 L1 贡献层。标准动作靠 manifest 里每个 step 的 `with` 块传参：
+
+```json
+{"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
+ "with": {"field": "amount", "op": "lte", "value": 10000},
+ "circuit_breaker_policy_ref": "route_to_flag", "on_success": "approve"}
+```
+
+`std.require` 是无 if/else 引擎里表达分支的惯用法：条件成立则走 `on_success`，不成立则**失败**，从而经由 `circuit_breaker_policy_ref` 路由到 fallback step。完整可运行范例见 `examples/manifests/expense-guard.json`。
+
+### 提交前用 `cee validate` 自查
+
+`cmd/cee` 提供一个静态校验器，把结构完整性和引用完整性检查做成一条命令，纯声明式 manifest 可被完整校验（引用了自定义 Go hook 的 step 只能结构校验，hook 是否存在由 `Load` 在运行时兜底，validate 会以 warning 提示）：
+
+```bash
+go run ./cmd/cee validate examples/manifests/expense-guard.json
+# ok: no issues        -> exit 0
+# [error] ...           -> exit 1（可直接用于 CI 门禁）
+```
+
+它会抓出：悬空的 `on_success`/`sub_workflow_ref`/`entry_step_ref`、引用了未声明的 `circuit_breaker_policy_ref`、断路器 fallback 指向不存在的 step、标准动作参数写错、重复 step_id 等。
 
 `action_ref` 在 `hooks` 里找不到、`type` 既不是 `"leaf"` 也不是 `"composite"`、`composite` 缺 `sub_workflow_ref`——这三类错误 `Load` 都会返回带上下文（域名/workflow名/step名）的 `error`，方便定位是哪个 manifest 的哪个 step 写错了。
 
@@ -185,7 +211,8 @@ if result.Success {
 | `llminjector` | `NewInjector() *Injector` | `RegisterSchema(schemaRef string, schema Schema, extractor Extractor)`、`Extract(entities.ExtractionRequest) entities.ExtractionResult` |
 | `sandbox` | `NewSandbox() *Sandbox` | `RegisterProbe(probeRef string, probe Probe)`、`Probe(entities.ProbeRequest) (entities.ProbeResult, error)` |
 | `registry` | `NewRegistry(router *intentrouter.Router, engine *execution.Engine) *Registry` | `RegisterDomain(Domain)`、`Domains() []string` |
-| `manifest` | 无（纯函数包） | `Load(data []byte, hooks Hooks) (*registry.Domain, error)` |
+| `stdlib` | 无（`Default() Library` 返回内置动作） | 内置 `std.set`、`std.require`、`std.rule_check` |
+| `manifest` | 无（纯函数包） | `Load(data []byte, hooks Hooks, std stdlib.Library) (*registry.Domain, error)`、`Validate(data []byte, std stdlib.Library) Report` |
 
 ## 7. 测试规范（怎么写，不是要不要写——那是 NORMATIVE_HANDBOOK 的事）
 

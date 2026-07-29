@@ -132,9 +132,11 @@ func TestFailureWithPolicyFallsBack(t *testing.T) {
 type fakeSandbox struct {
 	healthy     bool
 	failureMode string
+	lastRequest entities.ProbeRequest
 }
 
 func (f *fakeSandbox) Probe(req entities.ProbeRequest) (entities.ProbeResult, error) {
+	f.lastRequest = req
 	return entities.ProbeResult{Healthy: f.healthy, DetectedFailureMode: f.failureMode}, nil
 }
 
@@ -160,6 +162,32 @@ func TestSandboxGateAllowsHealthyStep(t *testing.T) {
 	}
 	if result.Output["executed"] != true {
 		t.Fatalf("expected step to execute after a healthy probe, got %v", result.Output)
+	}
+}
+
+func TestProbeReceivesTheWorkflowsDomainNotItsRef(t *testing.T) {
+	sb := &fakeSandbox{healthy: true}
+	engine := NewEngine(sb)
+	engine.RegisterWorkflow(&Workflow{
+		WorkflowID:  "security.contain_threat",
+		DomainID:    "security",
+		EntryStepID: "risky",
+		Steps: map[string]Step{
+			"risky": &LeafStep{
+				StepID:          "risky",
+				SandboxProbeRef: "check_impact",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return map[string]any{"executed": true}, nil
+				},
+			},
+		},
+	})
+
+	if _, err := engine.Run("security.contain_threat", map[string]any{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sb.lastRequest.DomainID != "security" {
+		t.Fatalf("probe should receive the domain %q, got %q", "security", sb.lastRequest.DomainID)
 	}
 }
 
