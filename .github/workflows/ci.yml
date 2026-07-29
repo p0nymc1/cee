@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Read the exact toolchain from go.mod so CI never drifts from the
+          # version the module declares.
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Lint the plugin catalog
+        # The same gate contributors run locally: every listed plugin must
+        # pass manifest validation before it can ship.
+        run: go run ./cmd/cee lint
+
+      - name: Build & test satellite modules
+        # Satellites are separate modules (their own go.mod, own dependencies)
+        # so the core job above never touches them. Gate them here.
+        run: |
+          for mod in satellites/*/; do
+            echo "== $mod =="
+            ( cd "$mod" && go build ./... && go vet ./... && go test ./... )
+          done

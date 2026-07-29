@@ -6,5 +6,9 @@
 
 # Go build artifacts
 /cee
+/bin/
 *.test
 *.out
+
+# Plugins fetched by `cee install` are local working files, not source
+/plugins/

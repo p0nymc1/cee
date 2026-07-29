@@ -1,0 +1,9 @@
+CEE — Cognitive Execution Engine
+Copyright (c) the CEE authors.
+
+This product is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License in the LICENSE file distributed with
+this work or at http://www.apache.org/licenses/LICENSE-2.0.
+
+CEE is implemented entirely in Go and depends only on the Go standard
+library. It vendors no third-party code.
