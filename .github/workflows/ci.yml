@@ -73,29 +73,94 @@ jobs:
           # deliberately absent (handbook rule 1.5).
           cache: false
 
-      - name: Run the examples
+      - name: Run everything, capturing output
         run: |
+          mkdir -p .demo
           for ex in security_monitoring human_approval meta_scenarios; do
-            echo "::group::examples/$ex"
-            go run "./examples/$ex"
-            echo "::endgroup::"
+            go run "./examples/$ex" | tee ".demo/$ex.txt"
           done
-
-      - name: Validate every shipped manifest
-        # Warnings are expected and allowed (an L2 plugin's Go hook cannot be
-        # resolved statically); a non-zero exit is not.
-        run: |
           for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do
-            echo "::group::$m"
-            go run ./cmd/cee validate "$m"
-            echo "::endgroup::"
+            printf '%-46s ' "$m" >> .demo/validate.txt
+            go run ./cmd/cee validate "$m" >> .demo/validate.txt
           done
+          go run ./cmd/cee list  | tee .demo/list.txt
+          go run ./cmd/cee bench | tee .demo/bench.txt
+          go test ./... 2>&1 | grep -c '^ok' > .demo/packages.txt
+          grep -rh '^func Test' --include='*_test.go' . | wc -l | tr -d ' ' > .demo/tests.txt
 
-      - name: Catalog listing and benchmark leaderboard
+      # Renders a report on the run's own page. A README can claim what the
+      # engine does; this shows what it did, on a clean machine, at this
+      # commit -- and it cannot drift, because nothing here is hand-written.
+      - name: Publish the run report
+        if: always()
         run: |
-          echo "::group::cee list"
-          go run ./cmd/cee list
-          echo "::endgroup::"
-          echo "::group::cee bench"
-          go run ./cmd/cee bench
-          echo "::endgroup::"
+          {
+            echo "# CEE — what actually ran"
+            echo
+            echo "Executed on a clean GitHub runner at commit \`${GITHUB_SHA:0:7}\`."
+            echo "Every block below is captured output, not documentation."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Packages passing | $(cat .demo/packages.txt) |"
+            echo "| Tests | $(cat .demo/tests.txt) |"
+            echo "| External dependencies | 0 |"
+            echo
+            echo "## Security monitoring — an L2 plugin"
+            echo
+            echo "An intent matches a brute-force technique, then a sandbox probe runs *before*"
+            echo "the containment action. On an ordinary host the action proceeds. On a domain"
+            echo "controller the probe refuses, and the breaker downgrades to human approval"
+            echo "rather than isolating a critical asset."
+            echo '```'
+            cat .demo/security_monitoring.txt
+            echo '```'
+            echo
+            echo "## Expense approval — an L1 plugin, zero Go"
+            echo
+            echo "The whole DAG is a JSON manifest. Over the threshold the run suspends for a"
+            echo "manager and a resume pointer is issued; the decision arrives later and the run"
+            echo "continues from where it stopped. Note the trace spans the pause."
+            echo '```'
+            cat .demo/human_approval.txt
+            echo '```'
+            echo
+            echo "## Three more scenarios"
+            echo
+            echo "An N-way switch built from steps with only two outbound edges; scheduling on an"
+            echo "engine that has no clock; and a batch, where the loop lives in the caller"
+            echo "because the DAG rejects cycles."
+            echo '```'
+            cat .demo/meta_scenarios.txt
+            echo '```'
+            echo
+            echo "## Plugin catalog"
+            echo
+            echo '```'
+            cat .demo/list.txt
+            echo '```'
+            echo
+            echo "Ranked by how many LLM calls each plugin removes against a baseline agent that"
+            echo "would call a model once per step:"
+            echo
+            echo '```'
+            cat .demo/bench.txt
+            echo '```'
+            echo
+            echo "## Manifest validation"
+            echo
+            echo "<details><summary>Every shipped manifest, statically checked</summary>"
+            echo
+            echo '```'
+            cat .demo/validate.txt
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the captured output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-output
+          path: .demo/

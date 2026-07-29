@@ -3,6 +3,12 @@
 > 认知执行引擎：把智能体从"概率试错"拉回"确定性工程"。
 > A business-agnostic protocol for deterministic-first agent execution, where the LLM is an edge tool — not the driver.
 
+[![CI](https://github.com/p0nymc1/cee/actions/workflows/ci.yml/badge.svg)](https://github.com/p0nymc1/cee/actions/workflows/ci.yml)
+
+> **想先看它真的能跑？** 点上面的徽章进入最近一次 CI 运行，页面上有一份自动生成的
+> **run report**：三个场景的完整执行输出、每个 Step 的 trace、插件排行榜、七份 manifest 的
+> 校验结果——全部由 GitHub runner 在干净机器上真实执行产生，不是文档里手写的。
+
 CEE 不是一个针对某个行业的应用，而是一套**跟业务无关的确定性执行协议**。它的赌注很简单：大多数被塞进"智能体"里的业务流程，本质上路径明确、不需要 LLM 每一步做决策；真正需要 LLM 的地方，只有"把非结构化输入转成结构化字段"这一件事。
 
 于是 CEE 把主控权交还给一台确定性状态机，LLM 被降级为一个**只做抽取、不做决策**的边缘工具。任何行业都可以把自己的流程作为"领域插件"接进来，而引擎代码一行都不用改。
@@ -55,7 +61,7 @@ flowchart TB
 
 ```bash
 go build ./...     # 编译全部包
-go test ./...       # 跑全部测试（当前 70+ 个）
+go test ./...       # 跑全部测试
 go vet ./...
 ```
 
