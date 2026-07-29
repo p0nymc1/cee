@@ -162,4 +162,4 @@ cd satellites/wasmhooks     && go test ./...
 
 ## License
 
-[Apache License 2.0](LICENSE)。选它是因为它对基础设施类软件最稳妥：带专利授权、企业采用无顾虑，也符合"成为公共协议"的定位。
+[Apache License 2.0](LICENSE)
