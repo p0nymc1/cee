@@ -75,18 +75,18 @@ jobs:
 
       - name: Run everything, capturing output
         run: |
-          mkdir -p .demo
+          mkdir -p demo-output
           for ex in security_monitoring human_approval meta_scenarios; do
-            go run "./examples/$ex" | tee ".demo/$ex.txt"
+            go run "./examples/$ex" | tee "demo-output/$ex.txt"
           done
           for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do
-            printf '%-46s ' "$m" >> .demo/validate.txt
-            go run ./cmd/cee validate "$m" >> .demo/validate.txt
+            printf '%-46s ' "$m" >> demo-output/validate.txt
+            go run ./cmd/cee validate "$m" >> demo-output/validate.txt
           done
-          go run ./cmd/cee list  | tee .demo/list.txt
-          go run ./cmd/cee bench | tee .demo/bench.txt
-          go test ./... 2>&1 | grep -c '^ok' > .demo/packages.txt
-          grep -rh '^func Test' --include='*_test.go' . | wc -l | tr -d ' ' > .demo/tests.txt
+          go run ./cmd/cee list  | tee demo-output/list.txt
+          go run ./cmd/cee bench | tee demo-output/bench.txt
+          go test ./... 2>&1 | grep -c '^ok' > demo-output/packages.txt
+          grep -rh '^func Test' --include='*_test.go' . | wc -l | tr -d ' ' > demo-output/tests.txt
 
       # Renders a report on the run's own page. A README can claim what the
       # engine does; this shows what it did, on a clean machine, at this
@@ -102,8 +102,8 @@ jobs:
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| Packages passing | $(cat .demo/packages.txt) |"
-            echo "| Tests | $(cat .demo/tests.txt) |"
+            echo "| Packages passing | $(cat demo-output/packages.txt) |"
+            echo "| Tests | $(cat demo-output/tests.txt) |"
             echo "| External dependencies | 0 |"
             echo
             echo "## Security monitoring — an L2 plugin"
@@ -113,7 +113,7 @@ jobs:
             echo "controller the probe refuses, and the breaker downgrades to human approval"
             echo "rather than isolating a critical asset."
             echo '```'
-            cat .demo/security_monitoring.txt
+            cat demo-output/security_monitoring.txt
             echo '```'
             echo
             echo "## Expense approval — an L1 plugin, zero Go"
@@ -122,7 +122,7 @@ jobs:
             echo "manager and a resume pointer is issued; the decision arrives later and the run"
             echo "continues from where it stopped. Note the trace spans the pause."
             echo '```'
-            cat .demo/human_approval.txt
+            cat demo-output/human_approval.txt
             echo '```'
             echo
             echo "## Three more scenarios"
@@ -131,20 +131,20 @@ jobs:
             echo "engine that has no clock; and a batch, where the loop lives in the caller"
             echo "because the DAG rejects cycles."
             echo '```'
-            cat .demo/meta_scenarios.txt
+            cat demo-output/meta_scenarios.txt
             echo '```'
             echo
             echo "## Plugin catalog"
             echo
             echo '```'
-            cat .demo/list.txt
+            cat demo-output/list.txt
             echo '```'
             echo
             echo "Ranked by how many LLM calls each plugin removes against a baseline agent that"
             echo "would call a model once per step:"
             echo
             echo '```'
-            cat .demo/bench.txt
+            cat demo-output/bench.txt
             echo '```'
             echo
             echo "## Manifest validation"
@@ -152,7 +152,7 @@ jobs:
             echo "<details><summary>Every shipped manifest, statically checked</summary>"
             echo
             echo '```'
-            cat .demo/validate.txt
+            cat demo-output/validate.txt
             echo '```'
             echo
             echo "</details>"
@@ -163,4 +163,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: demo-output
-          path: .demo/
+          path: demo-output/
+          # Default is warn, which lets an upload that matched nothing report
+          # success -- exactly how a dot-prefixed path silently uploaded zero
+          # files while the step went green.
+          if-no-files-found: error
