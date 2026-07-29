@@ -3,7 +3,7 @@ package llminjector
 import (
 	"testing"
 
-	"github.com/cee-project/cee/entities"
+	"github.com/p0nymc1/cee/entities"
 )
 
 func TestExtractionStripsUnschemaFields(t *testing.T) {

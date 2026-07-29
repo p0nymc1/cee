@@ -3,9 +3,9 @@ package bench
 import (
 	"testing"
 
-	"github.com/cee-project/cee/manifest"
-	"github.com/cee-project/cee/registry"
-	"github.com/cee-project/cee/stdlib"
+	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/registry"
+	"github.com/p0nymc1/cee/stdlib"
 )
 
 const slaManifest = `{

@@ -7,10 +7,10 @@
 // Runtime is a thin adapter over a WASM runtime such as wazero (pure Go, no
 // further transitive dependencies); when wiring that in, add its require here
 // -- in the satellite, never in the core. See README.md.
-module github.com/cee-project/cee/satellites/wasmhooks
+module github.com/p0nymc1/cee/satellites/wasmhooks
 
 go 1.26.5
 
-require github.com/cee-project/cee v0.0.0
+require github.com/p0nymc1/cee v0.0.0
 
-replace github.com/cee-project/cee => ../..
+replace github.com/p0nymc1/cee => ../..

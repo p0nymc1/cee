@@ -15,10 +15,10 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/cee-project/cee/execution"
-	"github.com/cee-project/cee/intentrouter"
-	"github.com/cee-project/cee/registry"
-	"github.com/cee-project/cee/scorecard"
+	"github.com/p0nymc1/cee/execution"
+	"github.com/p0nymc1/cee/intentrouter"
+	"github.com/p0nymc1/cee/registry"
+	"github.com/p0nymc1/cee/scorecard"
 )
 
 // Event is one benchmark input: a workflow to run and the context to run it

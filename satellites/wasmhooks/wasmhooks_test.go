@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cee-project/cee/execution"
-	"github.com/cee-project/cee/intentrouter"
-	"github.com/cee-project/cee/manifest"
-	"github.com/cee-project/cee/registry"
-	"github.com/cee-project/cee/stdlib"
+	"github.com/p0nymc1/cee/execution"
+	"github.com/p0nymc1/cee/intentrouter"
+	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/registry"
+	"github.com/p0nymc1/cee/stdlib"
 )
 
 // fakeRuntime stands in for a real WASM runtime (e.g. wazero). It honors the

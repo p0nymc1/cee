@@ -22,7 +22,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cee-project/cee/llminjector"
+	"github.com/p0nymc1/cee/llminjector"
 )
 
 // Doer is the slice of *http.Client the extractor needs. Tests inject a fake

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cee-project/cee/execution"
+	"github.com/p0nymc1/cee/execution"
 )
 
 func newStore(t *testing.T) (*Store, string) {

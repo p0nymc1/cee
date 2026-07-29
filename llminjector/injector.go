@@ -9,7 +9,7 @@ package llminjector
 import (
 	"fmt"
 
-	"github.com/cee-project/cee/entities"
+	"github.com/p0nymc1/cee/entities"
 )
 
 // FieldType is the set of primitive kinds an extracted field may declare.

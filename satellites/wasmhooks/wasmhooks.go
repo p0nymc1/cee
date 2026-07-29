@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cee-project/cee/execution"
+	"github.com/p0nymc1/cee/execution"
 )
 
 // Runtime executes a WebAssembly module in isolation: inputJSON in, outputJSON

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cee-project/cee/stdlib"
+	"github.com/p0nymc1/cee/stdlib"
 )
 
 // Severity distinguishes issues that make a manifest invalid from advisory

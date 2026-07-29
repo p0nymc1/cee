@@ -22,8 +22,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/cee-project/cee/entities"
-	"github.com/cee-project/cee/execution"
+	"github.com/p0nymc1/cee/entities"
+	"github.com/p0nymc1/cee/execution"
 )
 
 // CommandRunner runs an external command and reports its exit code and

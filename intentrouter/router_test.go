@@ -3,7 +3,7 @@ package intentrouter
 import (
 	"testing"
 
-	"github.com/cee-project/cee/entities"
+	"github.com/p0nymc1/cee/entities"
 )
 
 func newTestRouter() *Router {

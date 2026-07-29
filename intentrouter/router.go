@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cee-project/cee/entities"
+	"github.com/p0nymc1/cee/entities"
 )
 
 var tokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cee-project/cee/intentrouter"
+	"github.com/p0nymc1/cee/intentrouter"
 )
 
 // Compile-time proof that a *Client is a usable intentrouter.Vectorizer.

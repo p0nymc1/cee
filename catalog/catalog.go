@@ -17,8 +17,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cee-project/cee/manifest"
-	"github.com/cee-project/cee/stdlib"
+	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/stdlib"
 )
 
 // Entry is one plugin's listing in the catalog index.

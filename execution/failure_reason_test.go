@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cee-project/cee/entities"
+	"github.com/p0nymc1/cee/entities"
 )
 
 // A fallback step exists to handle a failure, so it is precisely the step

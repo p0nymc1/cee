@@ -15,10 +15,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cee-project/cee/bench"
-	"github.com/cee-project/cee/catalog"
-	"github.com/cee-project/cee/manifest"
-	"github.com/cee-project/cee/stdlib"
+	"github.com/p0nymc1/cee/bench"
+	"github.com/p0nymc1/cee/catalog"
+	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/stdlib"
 )
 
 const defaultCatalogDir = "catalog"

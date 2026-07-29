@@ -3,8 +3,8 @@ package scorecard
 import (
 	"testing"
 
-	"github.com/cee-project/cee/execution"
-	"github.com/cee-project/cee/llminjector"
+	"github.com/p0nymc1/cee/execution"
+	"github.com/p0nymc1/cee/llminjector"
 )
 
 // The recorder must satisfy both observer interfaces. These assignments fail

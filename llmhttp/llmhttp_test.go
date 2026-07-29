@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cee-project/cee/entities"
-	"github.com/cee-project/cee/llminjector"
+	"github.com/p0nymc1/cee/entities"
+	"github.com/p0nymc1/cee/llminjector"
 )
 
 // fakeDoer returns a canned chat-completions response and records the request
