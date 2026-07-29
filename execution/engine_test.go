@@ -129,6 +129,104 @@ func TestFailureWithPolicyFallsBack(t *testing.T) {
 	}
 }
 
+// The three tests below cover DAG shapes that are structurally broken. Before
+// the ceilings existed, the first hung forever and the second aborted the
+// whole process with an unrecoverable stack overflow.
+
+func TestOnSuccessCycleHitsTheStepLimit(t *testing.T) {
+	engine := NewEngine(nil)
+	engine.SetLimits(50, 0) // small ceiling keeps the test fast
+	noop := func(ctx map[string]any) (map[string]any, error) { return map[string]any{}, nil }
+	engine.RegisterWorkflow(&Workflow{
+		WorkflowID:  "cyclic",
+		EntryStepID: "a",
+		Steps: map[string]Step{
+			"a": &LeafStep{StepID: "a", Run: noop, OnSuccess: "b"},
+			"b": &LeafStep{StepID: "b", Run: noop, OnSuccess: "a"},
+		},
+	})
+
+	_, err := engine.Run("cyclic", map[string]any{})
+
+	var limit *StepLimitExceeded
+	if !errors.As(err, &limit) {
+		t.Fatalf("expected *StepLimitExceeded, got %v", err)
+	}
+	if limit.WorkflowID != "cyclic" || limit.Limit != 50 {
+		t.Fatalf("unexpected limit detail: %+v", limit)
+	}
+	// The tail of the trace is what tells an author where the cycle is.
+	if len(limit.RecentSteps) == 0 {
+		t.Fatalf("expected RecentSteps to point at the cycle, got none")
+	}
+}
+
+func TestSubWorkflowCycleHitsTheDepthLimit(t *testing.T) {
+	engine := NewEngine(nil)
+	engine.SetLimits(0, 8)
+	engine.RegisterWorkflow(&Workflow{
+		WorkflowID:  "recursive",
+		EntryStepID: "down",
+		Steps: map[string]Step{
+			"down": &CompositeStep{StepID: "down", SubWorkflowRef: "recursive"},
+		},
+	})
+
+	_, err := engine.Run("recursive", map[string]any{})
+
+	var limit *DepthLimitExceeded
+	if !errors.As(err, &limit) {
+		t.Fatalf("expected *DepthLimitExceeded, got %v", err)
+	}
+	if limit.Limit != 8 {
+		t.Fatalf("unexpected limit detail: %+v", limit)
+	}
+}
+
+func TestRunawayIsNotSwallowedByACircuitBreaker(t *testing.T) {
+	engine := NewEngine(nil)
+	engine.SetLimits(0, 4)
+	engine.RegisterPolicy(CircuitBreakerPolicy{PolicyID: "catch_all", FallbackStepRef: "rescue"})
+	engine.RegisterWorkflow(&Workflow{
+		WorkflowID:  "recursive",
+		EntryStepID: "down",
+		Steps: map[string]Step{
+			"down": &CompositeStep{
+				StepID:                  "down",
+				SubWorkflowRef:          "recursive",
+				CircuitBreakerPolicyRef: "catch_all",
+			},
+			"rescue": &LeafStep{
+				StepID: "rescue",
+				Run: func(ctx map[string]any) (map[string]any, error) {
+					return map[string]any{"rescued": true}, nil
+				},
+			},
+		},
+	})
+
+	result, err := engine.Run("recursive", map[string]any{})
+
+	// A breaker absorbs business failures, not broken DAG shapes: the
+	// fallback must not run and the defect must reach the caller.
+	var limit *DepthLimitExceeded
+	if !errors.As(err, &limit) {
+		t.Fatalf("expected the depth limit to bypass the breaker, got %v", err)
+	}
+	if result.Output["rescued"] == true {
+		t.Fatalf("fallback step ran; a runaway must not be swallowed by a breaker")
+	}
+}
+
+func TestSetLimitsIgnoresNonPositiveValues(t *testing.T) {
+	engine := NewEngine(nil)
+	engine.SetLimits(-1, 0)
+	if engine.maxSteps != DefaultMaxSteps || engine.maxDepth != DefaultMaxDepth {
+		t.Fatalf("ceilings must not be switchable off, got steps=%d depth=%d",
+			engine.maxSteps, engine.maxDepth)
+	}
+}
+
 type fakeSandbox struct {
 	healthy     bool
 	failureMode string

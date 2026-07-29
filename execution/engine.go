@@ -7,6 +7,7 @@
 package execution
 
 import (
+	"errors"
 	"fmt"
 
 	"cee/entities"
@@ -21,6 +22,47 @@ type CircuitBreakerTripped struct {
 
 func (e *CircuitBreakerTripped) Error() string {
 	return fmt.Sprintf("circuit breaker tripped at step %q: %s", e.StepID, e.Reason)
+}
+
+// Default ceilings on a single Run. They exist to make a malformed DAG fail
+// as a reportable error rather than as a hang or a process kill: an
+// on_success cycle would otherwise spin forever, and a sub_workflow_ref
+// cycle would otherwise recurse until the Go runtime aborts with a stack
+// overflow, which cannot be recovered. Both are set well above any
+// legitimate workflow -- a DAG walk normally visits each step at most once.
+const (
+	DefaultMaxSteps = 10_000
+	DefaultMaxDepth = 64
+)
+
+// StepLimitExceeded is returned when one workflow executes more steps than
+// the engine's ceiling allows -- in practice, an on_success cycle.
+// RecentSteps holds the tail of the trace, which is where the cycle is.
+type StepLimitExceeded struct {
+	WorkflowID  string
+	Limit       int
+	RecentSteps []string
+}
+
+func (e *StepLimitExceeded) Error() string {
+	return fmt.Sprintf(
+		"workflow %q exceeded the %d step limit (likely an on_success cycle); most recent steps: %v",
+		e.WorkflowID, e.Limit, e.RecentSteps,
+	)
+}
+
+// DepthLimitExceeded is returned when CompositeStep nesting goes deeper than
+// the engine's ceiling -- in practice, a sub_workflow_ref cycle.
+type DepthLimitExceeded struct {
+	WorkflowID string
+	Limit      int
+}
+
+func (e *DepthLimitExceeded) Error() string {
+	return fmt.Sprintf(
+		"workflow %q exceeded the %d sub-workflow nesting limit (likely a sub_workflow_ref cycle)",
+		e.WorkflowID, e.Limit,
+	)
 }
 
 // Step is the shape every node in a workflow's step map satisfies. It is
@@ -84,13 +126,27 @@ type Prober interface {
 	Probe(entities.ProbeRequest) (entities.ProbeResult, error)
 }
 
+// Observer receives one callback per engine event so a scorecard recorder
+// can measure a run without the engine depending on any metrics package.
+// Every leaf step the engine executes is, by construction, a deterministic
+// operation -- that is exactly the quantity a scorecard needs to prove how
+// many LLM calls a naive per-step agent would have made and CEE did not.
+type Observer interface {
+	ObserveStep(workflowID, stepID string)
+	ObserveSandboxProbe(workflowID, stepID string)
+	ObserveCircuitBreaker(workflowID, stepID string)
+}
+
 // Engine walks a registered Workflow's Step DAG to completion. Sandbox
 // probing and circuit-breaking are the only two ways a step's forward
 // progress can be redirected.
 type Engine struct {
 	sandbox   Prober
+	observer  Observer
 	workflows map[string]*Workflow
 	policies  map[string]CircuitBreakerPolicy
+	maxSteps  int
+	maxDepth  int
 }
 
 // NewEngine builds an Engine. sandbox may be nil as long as no registered
@@ -100,7 +156,27 @@ func NewEngine(sandbox Prober) *Engine {
 		sandbox:   sandbox,
 		workflows: make(map[string]*Workflow),
 		policies:  make(map[string]CircuitBreakerPolicy),
+		maxSteps:  DefaultMaxSteps,
+		maxDepth:  DefaultMaxDepth,
 	}
+}
+
+// SetLimits overrides the runaway ceilings. A non-positive value leaves that
+// ceiling at its default -- the ceilings cannot be switched off, because an
+// unbounded walk is a process-level hazard rather than a workflow-level one.
+func (e *Engine) SetLimits(maxSteps, maxDepth int) {
+	if maxSteps > 0 {
+		e.maxSteps = maxSteps
+	}
+	if maxDepth > 0 {
+		e.maxDepth = maxDepth
+	}
+}
+
+// SetObserver attaches an Observer for metrics collection. Passing nil (the
+// default) disables observation with zero overhead.
+func (e *Engine) SetObserver(o Observer) {
+	e.observer = o
 }
 
 func (e *Engine) RegisterWorkflow(w *Workflow) {
@@ -114,6 +190,16 @@ func (e *Engine) RegisterPolicy(p CircuitBreakerPolicy) {
 // Run walks workflowRef's Step DAG starting from its entry step, threading
 // context through each step's output.
 func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error) {
+	return e.run(workflowRef, ctx, 0)
+}
+
+// run is Run plus the current sub-workflow nesting depth. Steps are counted
+// per workflow, depth across them.
+func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
+	if depth > e.maxDepth {
+		return entities.WorkflowResult{}, &DepthLimitExceeded{WorkflowID: workflowRef, Limit: e.maxDepth}
+	}
+
 	workflow, ok := e.workflows[workflowRef]
 	if !ok {
 		return entities.WorkflowResult{}, fmt.Errorf("no workflow registered for %q", workflowRef)
@@ -121,8 +207,18 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 
 	stepID := workflow.EntryStepID
 	var trace []string
+	steps := 0
 
 	for stepID != "" {
+		steps++
+		if steps > e.maxSteps {
+			return entities.WorkflowResult{}, &StepLimitExceeded{
+				WorkflowID:  workflowRef,
+				Limit:       e.maxSteps,
+				RecentSteps: tail(trace, 10),
+			}
+		}
+
 		step, ok := workflow.Steps[stepID]
 		if !ok {
 			return entities.WorkflowResult{}, fmt.Errorf("workflow %q has no step %q", workflowRef, stepID)
@@ -131,8 +227,17 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 
 		switch s := step.(type) {
 		case *CompositeStep:
-			subResult, err := e.Run(s.SubWorkflowRef, ctx)
+			subResult, err := e.run(s.SubWorkflowRef, ctx, depth+1)
 			if err != nil {
+				// A runaway sub-workflow is a defect in the DAG's shape, not
+				// a business failure the breaker exists to absorb. Letting a
+				// fallback swallow it would hide the bug and let the outer
+				// loop re-enter the same broken sub-workflow, so it goes
+				// straight up instead.
+				if isRunaway(err) {
+					return entities.WorkflowResult{}, err
+				}
+				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 				next, breakErr := e.onFailure(s, err.Error())
 				if breakErr != nil {
 					return entities.WorkflowResult{}, breakErr
@@ -152,6 +257,7 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 						s.StepID, s.SandboxProbeRef,
 					)
 				}
+				e.observe(func(o Observer) { o.ObserveSandboxProbe(workflow.WorkflowID, s.StepID) })
 				probeResult, err := e.sandbox.Probe(entities.ProbeRequest{
 					ProbeRef:    s.SandboxProbeRef,
 					DomainID:    workflow.DomainID,
@@ -162,6 +268,7 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 					if err != nil {
 						reason = err.Error()
 					}
+					e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 					next, breakErr := e.onFailure(s, reason)
 					if breakErr != nil {
 						return entities.WorkflowResult{}, breakErr
@@ -171,8 +278,10 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 				}
 			}
 
+			e.observe(func(o Observer) { o.ObserveStep(workflow.WorkflowID, s.StepID) })
 			output, err := s.Run(ctx)
 			if err != nil {
+				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
 				next, breakErr := e.onFailure(s, err.Error())
 				if breakErr != nil {
 					return entities.WorkflowResult{}, breakErr
@@ -191,6 +300,14 @@ func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowR
 	return entities.WorkflowResult{Output: ctx, StatePointer: workflowRef, Trace: trace}, nil
 }
 
+// observe invokes fn with the attached observer, if any. Keeping the nil
+// check in one place lets the Run loop stay readable.
+func (e *Engine) observe(fn func(Observer)) {
+	if e.observer != nil {
+		fn(e.observer)
+	}
+}
+
 func (e *Engine) onFailure(step Step, reason string) (string, error) {
 	if ref := step.circuitBreakerPolicyRef(); ref != "" {
 		if policy, ok := e.policies[ref]; ok && policy.FallbackStepRef != "" {
@@ -198,6 +315,22 @@ func (e *Engine) onFailure(step Step, reason string) (string, error) {
 		}
 	}
 	return "", &CircuitBreakerTripped{StepID: step.ID(), Reason: reason}
+}
+
+// isRunaway reports whether err is one of the structural ceilings, which
+// bypass circuit breakers entirely.
+func isRunaway(err error) bool {
+	var stepLimit *StepLimitExceeded
+	var depthLimit *DepthLimitExceeded
+	return errors.As(err, &stepLimit) || errors.As(err, &depthLimit)
+}
+
+// tail returns at most the last n elements of s.
+func tail(s []string, n int) []string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func merge(base, overlay map[string]any) map[string]any {

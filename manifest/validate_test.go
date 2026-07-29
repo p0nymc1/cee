@@ -93,6 +93,96 @@ func TestValidateCatchesDanglingOnSuccess(t *testing.T) {
 	}
 }
 
+// The next four cover the DAG shapes that used to be found only at runtime,
+// where an on_success cycle hung Engine.Run and a sub_workflow_ref cycle
+// killed the process with an unrecoverable stack overflow.
+
+func TestValidateCatchesOnSuccessCycle(t *testing.T) {
+	bad := `{
+		"name": "broken",
+		"workflows": [{
+			"workflow_id": "broken.wf",
+			"entry_step_id": "a",
+			"steps": [
+				{"step_id": "a", "type": "leaf", "action_ref": "std.set", "with": {"fields": {}}, "on_success": "b"},
+				{"step_id": "b", "type": "leaf", "action_ref": "std.set", "with": {"fields": {}}, "on_success": "a"}
+			]
+		}]
+	}`
+	report := Validate([]byte(bad), stdlib.Default())
+	if report.OK() {
+		t.Fatalf("expected an error for an on_success cycle, got:\n%s", report.String())
+	}
+	if !strings.Contains(report.String(), "a -> b -> a") {
+		t.Fatalf("expected the cycle path to be spelled out, got:\n%s", report.String())
+	}
+}
+
+func TestValidateCatchesSubWorkflowCycle(t *testing.T) {
+	bad := `{
+		"name": "broken",
+		"workflows": [
+			{"workflow_id": "broken.outer", "entry_step_id": "down",
+			 "steps": [{"step_id": "down", "type": "composite", "sub_workflow_ref": "broken.inner"}]},
+			{"workflow_id": "broken.inner", "entry_step_id": "up",
+			 "steps": [{"step_id": "up", "type": "composite", "sub_workflow_ref": "broken.outer"}]}
+		]
+	}`
+	report := Validate([]byte(bad), stdlib.Default())
+	if report.OK() {
+		t.Fatalf("expected an error for a sub_workflow_ref cycle, got:\n%s", report.String())
+	}
+	if !strings.Contains(report.String(), "stack overflow") {
+		t.Fatalf("expected the report to say why this one is fatal, got:\n%s", report.String())
+	}
+}
+
+// A loop that only closes through a breaker fallback needs repeated failure
+// to spin, so it is reported but must not fail the manifest.
+func TestValidateWarnsButDoesNotFailOnFallbackLoop(t *testing.T) {
+	loop := `{
+		"name": "loopy",
+		"policies": [{"policy_id": "retry_via_a", "fallback_step_ref": "a"}],
+		"workflows": [{
+			"workflow_id": "loopy.wf",
+			"entry_step_id": "a",
+			"steps": [
+				{"step_id": "a", "type": "leaf", "action_ref": "std.set", "with": {"fields": {}}, "on_success": "b"},
+				{"step_id": "b", "type": "leaf", "action_ref": "std.require",
+				 "with": {"field": "x", "op": "eq", "value": 1}, "circuit_breaker_policy_ref": "retry_via_a"}
+			]
+		}]
+	}`
+	report := Validate([]byte(loop), stdlib.Default())
+	if !report.OK() {
+		t.Fatalf("a fallback loop is a warning, not an error; got:\n%s", report.String())
+	}
+	if !strings.Contains(report.String(), "circuit breaker fallback") {
+		t.Fatalf("expected a warning about the fallback loop, got:\n%s", report.String())
+	}
+}
+
+func TestValidateWarnsOnUnreachableStep(t *testing.T) {
+	orphaned := `{
+		"name": "orphan",
+		"workflows": [{
+			"workflow_id": "orphan.wf",
+			"entry_step_id": "a",
+			"steps": [
+				{"step_id": "a", "type": "leaf", "action_ref": "std.set", "with": {"fields": {}}},
+				{"step_id": "stranded", "type": "leaf", "action_ref": "std.set", "with": {"fields": {}}}
+			]
+		}]
+	}`
+	report := Validate([]byte(orphaned), stdlib.Default())
+	if !report.OK() {
+		t.Fatalf("an unreachable step is a warning, not an error; got:\n%s", report.String())
+	}
+	if !strings.Contains(report.String(), "stranded") {
+		t.Fatalf("expected the unreachable step to be named, got:\n%s", report.String())
+	}
+}
+
 func TestValidateCatchesUndeclaredPolicy(t *testing.T) {
 	bad := `{
 		"name": "broken",

@@ -1,6 +1,6 @@
 # CEE 技术说明书
 
-版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 八个库包，外加 `cmd/cee` 命令行工具）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 9 节）。
+版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 八个库包，外加 `cmd/cee` 命令行工具）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 10 节）。
 
 ## 1. 产品定位
 
@@ -47,7 +47,8 @@ flowchart TB
 | `scorecard` | 度量一次请求：确定性步数 / LLM 调用 / 沙盒预演 / 断路器次数 / 耗时，用于跟"朴素 Agent"基线对比 | `Scorecard`、`Recorder`、`NewRecorder` |
 | `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`） |
 | `manifest` | 声明式加载器 + 静态校验器：把 JSON DAG 绑定到标准动作/Go 具名函数，并可在运行前静态校验引用完整性 | `Load`、`Validate`、`Report`、`Hooks`、`File`、`StepSpec` 等 |
-| `cmd/cee` | 命令行工具：`cee validate <manifest.json>` 把规范红线做成自动化闸门（CI 可用） | — |
+| `catalog` | 社区分发层：git-based 插件目录（index.json + manifest 文件），支持列举/整体校验/安装 | `Catalog`、`Entry`、`Load`、`Lint`、`Install` |
+| `cmd/cee` | 命令行工具：`validate` 校验单个 manifest、`lint` 校验整个 catalog、`list` 列举、`install` 拉取（均可用于 CI） | — |
 
 ## 3. 核心实体模型（`entities` 包）
 
@@ -105,7 +106,7 @@ type WorkflowResult struct {
 
 `Engine.Run(workflowRef, ctx)` 从 `Workflow.EntryStepID` 开始，逐步执行：
 
-1. 若当前 Step 是 `CompositeStep`，递归调用 `Run(SubWorkflowRef, ctx)`；子流程失败会以 `CircuitBreakerTripped` 形式冒泡，被外层 Step 自己的断路器策略捕获。
+1. 若当前 Step 是 `CompositeStep`，递归调用 `Run(SubWorkflowRef, ctx)`；子流程失败会以 `CircuitBreakerTripped` 形式冒泡，被外层 Step 自己的断路器策略捕获（唯一例外是 5.4 的两个失控错误，它们绕过断路器直接向上）。
 2. 若当前 Step 是 `LeafStep` 且声明了 `SandboxProbeRef`，先调用 `Prober.Probe`；探针不健康则走断路器路径，**不会尝试执行真实动作**。
 3. 探针通过（或未声明探针）后执行 `Run(ctx)`；返回的 map 与当前 context 合并（浅合并，后者覆盖前者同名 key），推进到 `OnSuccess` 指向的下一个 Step。
 4. 任何失败（探针不健康 / Action 返回 error）都进入 `onFailure`：查 `CircuitBreakerPolicyRef` 指向的策略，若有 `FallbackStepRef` 则跳转过去；否则返回 `*CircuitBreakerTripped` 错误，调用方必须显式处理，**没有隐式重试**。
@@ -129,6 +130,23 @@ flowchart TD
 ### 5.3 断路器是"策略引用"，不是内联字面量
 
 `LeafStep`/`CompositeStep` 只声明一个 `CircuitBreakerPolicyRef string`；真正的 `FallbackStepRef` 定义在 `Engine.RegisterPolicy` 注册的全局策略表里。这样任何一个策略被谁引用、一共有多少个安全网，都可以从策略表一处审计，而不用扫遍所有 Step 定义。
+
+### 5.4 失控上限：结构性缺陷不该由断路器兜
+
+DAG 的形状写错时，5.2 的执行循环有两条路会失控。这两条都**不是业务失败**，因此不走断路器：
+
+| 缺陷 | 没有上限时的后果 | 上限 | 触发的错误 |
+|---|---|---|---|
+| `OnSuccess` 首尾相接成环 | `Run` 无限空转，进程挂住 | `DefaultMaxSteps = 10000` | `*StepLimitExceeded` |
+| `SubWorkflowRef` 指回自己/互指 | 无限递归，**Go 运行时 `fatal error: stack overflow` 直接杀掉进程，且不可 `recover`** | `DefaultMaxDepth = 64` | `*DepthLimitExceeded` |
+
+两个上限都设得远高于任何正常流程——一次 DAG 走法通常每个 Step 最多访问一次。可以用 `Engine.SetLimits(maxSteps, maxDepth)` 调整，但**关不掉**：传入非正值只会保留默认值。理由是失控是进程级危害，不是某个工作流自己的事，不该允许单个插件把整个运行时的护栏摘掉。
+
+`*StepLimitExceeded` 会带上 trace 的尾部（最后 10 步），环就在里面，便于直接定位。
+
+一个刻意的设计取舍：**这两个错误绕过断路器，直接向上冒泡**。子流程失控时不查 `CircuitBreakerPolicyRef`、不跳 fallback。因为断路器的语义是"业务动作失败了，走备用路径"，而 DAG 成环是**结构缺陷**——让 fallback 吞掉它等于把 bug 藏起来，外层还可能反复重入同一个坏掉的子流程。这条边界由 `TestRunawayIsNotSwallowedByACircuitBreaker` 锁住。
+
+上限是运行时的最后一道防线；**正常情况下这两类缺陷应该在 `cee validate` 阶段就被拦下**（见 8.4），根本走不到运行时。
 
 ## 6. 边缘 LLM 注入器（`llminjector`）
 
@@ -207,7 +225,11 @@ type Factory func(params map[string]any) (execution.Action, error)
 - `sub_workflow_ref` / `intent.entry_step_ref` 是否对得上某个 `workflow_id`
 - `step_id` 重复、缺 `action_ref`、未知 `type`
 - 标准动作的 `with` 参数是否合法（直接调 `Factory` 试绑定）
-- 只警告不报错的两类：`node_id` 缺域前缀；`action_ref` 不是标准动作（它是否存在只能等 `Load` 时对着 Hooks 验）
+- **`on_success` 成环**（报错）——这条路一定会让 `Run` 空转到撞上限，报告里会把环的路径打出来，形如 `a -> b -> a`
+- **`sub_workflow_ref` 成环**（报错）——比上一条更严重，运行时会栈溢出直接杀进程，所以必拦
+- 只警告不报错的四类：`node_id` 缺域前缀；`action_ref` 不是标准动作（它是否存在只能等 `Load` 时对着 Hooks 验）；**从 `entry_step_id` 走不到的孤儿 Step**；**只有经断路器 fallback 才闭合的环**
+
+最后一条的分级值得说明：`on_success` 是成功就走的边，成环则**必然**空转，所以是 error；而 fallback 边只在失败时才走，成环意味着"反复失败才会转起来"——它确实可能不终止，但需要条件触发，判成 error 会误伤合法设计，所以降为 warning。这个分级由 `TestValidateWarnsButDoesNotFailOnFallbackLoop` 锁住。
 
 命令行入口：
 
@@ -217,7 +239,44 @@ go run ./cmd/cee validate examples/manifests/expense-guard.json
 
 退出码 `0` = 无 error，`1` = 有 error，`2` = 用法/读文件出错——可直接用作 CI 门禁。这是把 `NORMATIVE_HANDBOOK` 的部分红线从"人工 Code Review"变成自动化检查的第一步。
 
-## 9. 当前范围与已知限制
+## 9. 度量与对标（`scorecard`）
+
+社区要靠"比 Agent 更高效"的**可证数字**、而非口号来积累势能，`scorecard` 就是产出这些数字的地方。
+
+### 9.1 埋点方式：可选 Observer，零侵入
+
+`execution.Engine` 和 `llminjector.Injector` 各暴露一个 `SetObserver(...)`，默认 `nil`、零开销。引擎在每个 Step 执行 / 沙盒预演 / 断路器跳转时回调，注入器在每次真正调用抽取器时回调。`scorecard.Recorder` 在**方法集层面**同时满足这两个 Observer 接口——因此 `scorecard` 包**不 import** `execution` 或 `llminjector`，保持叶子地位，不制造反向依赖。
+
+### 9.2 基线模型：诚实,不估算 token
+
+对标模型是刻意选的:**朴素 Agent = 每个 Step 调一次 LLM**。在这个模型下,引擎跑的每一个确定性 Step,恰好就是 CEE 相比 Agent **省掉的一次 LLM 调用**。所以头号指标 `DeterminismRatio = 确定性步数 / (确定性步数 + LLM抽取次数)` 不是估算,而是"本该发生却没发生的 LLM 调用占比"——不需要猜 token 数就成立,等真实 LLM 接进来后只会更精确。
+
+被计数的是**实际执行**而非**路径访问**:一个被沙盒拦下、动作没跑成的 Step 不计入确定性步数(它计入沙盒预演 + 断路器)。`examples/security_monitoring` 的场景 2 因此显示"2 确定性步 + 1 预演 + 1 断路"而不是按 trace 的 3 步计——`go run ./examples/security_monitoring` 可直接看到两个场景的实时 Scorecard。
+
+## 10. 社区分发（`catalog` + `cee list/lint/install`）
+
+`catalog` 是插件生态的最简起点:**没有服务、没有数据库,一个 catalog 就是 `index.json` 加它指向的 manifest 文件**。贡献一个插件 = 一个 PR,没别的。托管式 registry 可以以后在同一个 `Entry` 形状后面再加,现在不做。
+
+### 10.1 目录形态
+
+```
+catalog/
+  index.json                        列出每个插件:name/description/version/tier/domain/manifest 路径/tags
+  plugins/<name>/manifest.json       实际的插件 manifest（L1 纯声明式的可被完整分发）
+```
+
+仓库自带两个跨领域的 L1 样例:`sla-guard`(支持/运维域)和 `access-review`(安全/合规域),都零 Go 代码,证明多插件多领域在同一 catalog 里共存。
+
+### 10.2 分发层的两个闸门
+
+- **`Catalog.Lint`**(`cee lint`):校验整个 catalog——名字唯一、tier 合法、manifest 存在且其声明的 name 与 entry 对得上、且每份 manifest 都过 `manifest.Validate`。它复用 `manifest.Report`,所以 `cee lint` 和 `cee validate` 说同一种"语言",可直接做 CI 门禁。`catalog/catalog_test.go` 里的 `TestRepoCatalogLintsClean` 用 `Load(".")` 守住仓库自带的真实 catalog 必须永远 lint 干净。
+- **`Catalog.Install`**(`cee install`):**先校验再落盘**——一份过不了 `manifest.Validate` 的插件永远不会被写进本地 `plugins/`。这是安装期的质量闸门,`TestInstallRefusesInvalidManifest` 锁住这条。
+
+### 10.3 L1 可作为数据分发,L2 不行
+
+catalog 携带的是 L1(纯 manifest)插件,可被 `install` 拉下来当数据直接 `manifest.Load` 跑起来(`TestInstallAndRunFromRepoCatalog` 证明了"从 catalog 到活引擎"这条链路)。需要 Go Hook 的 L2 插件仍然走 Go module 分发;`Entry` 可以用 `tier: "L2"` 描述它以便被发现,但 `Install` 只处理它能完整校验的 manifest。
+
+## 11. 当前范围与已知限制
 
 以下内容**尚未实现**，属于路线图但不在当前代码里，避免与实际状态混淆：
 
@@ -225,5 +284,6 @@ go run ./cmd/cee validate examples/manifests/expense-guard.json
 - **真实后端**：`intentrouter` 的向量检索、`execution` 的分布式/持久化状态存储、`sandbox` 的进程隔离、`llminjector` 的真实 LLM 调用，目前都是本地内存态的最小实现，用于验证协议本身，尚未接入 Qdrant / Temporal / E2B / 任何 LLM API。
 - **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
 - **状态持久化**：`WorkflowResult.StatePointer` 字段已定义，但目前只是回填 `workflowRef` 字符串，没有真正对接外部存储或支持"从指针恢复执行"。
-- **校验器的盲区**：`manifest.Validate` 只做引用完整性检查，**不做可达性和环检测**——一个永远走不到的 Step、或者 `on_success` 首尾相接形成的死循环，当前都能通过校验。前者无害，后者会让 `Engine.Run` 挂住（执行循环没有步数上限）。
+- **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
 - **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
+- **Scorecard 的 token 维度**：`scorecard` 目前度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实；但它**还没有真实的 token 消耗数**（注入器尚未接真实 LLM），也**还没有内建的 Agent 对照组跑批**——排行榜、基准套件都还是路线图,不在当前代码里。
