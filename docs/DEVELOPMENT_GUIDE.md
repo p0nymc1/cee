@@ -25,9 +25,13 @@ cee/
   llminjector/    边缘 LLM 抽取器
   sandbox/        预执行沙盒
   registry/       领域注册表（把插件接入 Router + Engine）
-  manifest/       JSON 声明式加载器（Load 出 registry.Domain）
+  manifest/       JSON 声明式加载器（Load 出 registry.Domain）+ 静态校验器（Validate）
+  stdlib/         标准动作库（std.set / std.require / std.rule_check）
+  cmd/cee/        命令行工具：cee validate <manifest.json>
   docs/           本文档所在目录
-  examples/       预留给领域插件范例（目前为空）
+  examples/
+    security_monitoring/   L2 范例：Go 插件 + 沙盒门禁 + 断路器降级人工审批
+    manifests/             L1 范例：expense-guard.json，纯 JSON、零 Go 代码
   tests/          Go 惯例是 *_test.go 跟源码同目录，这个顶层目录目前未使用
 ```
 
@@ -35,9 +39,11 @@ cee/
 
 ```
 entities  ←  intentrouter, execution, llminjector, sandbox
-execution ←  registry, manifest
+execution ←  registry, manifest, stdlib
 intentrouter ← registry, manifest
 registry  ←  manifest
+stdlib    ←  manifest
+manifest, stdlib  ←  cmd/cee
 ```
 
 ## 3. 快速开始：从零跑通一个领域

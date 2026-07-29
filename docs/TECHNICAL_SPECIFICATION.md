@@ -1,6 +1,6 @@
 # CEE 技术说明书
 
-版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` 七个包）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 8 节）。
+版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 八个库包，外加 `cmd/cee` 命令行工具）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 9 节）。
 
 ## 1. 产品定位
 
@@ -20,17 +20,21 @@ flowchart TB
         SBX[sandbox.Sandbox]
         REG[registry.Registry]
         MAN[manifest.Load]
+        STD[stdlib.Library]
         REG --> IR
         REG --> DEE
         MAN --> REG
+        STD --> MAN
         DEE -. Prober interface .-> SBX
     end
 
-    PLUGIN["领域插件<br/>(Go struct 或 JSON manifest + Hooks)"] --> MAN
-    PLUGIN -.也可以直接构造.-> REG
+    L1["L1 插件（无代码）<br/>纯 JSON manifest + std.* 动作"] --> MAN
+    L2["L2 插件（有代码）<br/>JSON manifest + Go Hooks"] --> MAN
+    L2 -.也可以直接构造 Domain.-> REG
+    CLI["cmd/cee validate"] -.静态校验，不执行.-> MAN
 ```
 
-七个包各自的职责边界：
+各包的职责边界：
 
 | 包 | 职责 | 对外暴露的核心类型 |
 |---|---|---|
@@ -40,6 +44,7 @@ flowchart TB
 | `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
 | `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
 | `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
+| `scorecard` | 度量一次请求：确定性步数 / LLM 调用 / 沙盒预演 / 断路器次数 / 耗时，用于跟"朴素 Agent"基线对比 | `Scorecard`、`Recorder`、`NewRecorder` |
 | `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`） |
 | `manifest` | 声明式加载器 + 静态校验器：把 JSON DAG 绑定到标准动作/Go 具名函数，并可在运行前静态校验引用完整性 | `Load`、`Validate`、`Report`、`Hooks`、`File`、`StepSpec` 等 |
 | `cmd/cee` | 命令行工具：`cee validate <manifest.json>` 把规范红线做成自动化闸门（CI 可用） | — |
@@ -144,11 +149,81 @@ for field, wantType := range reg.schema {
 
 `Sandbox.Probe` 满足 `execution.Prober` 接口，内部只是把 `ProbeRequest.StepContext` 转发给注册的 `Probe` 函数（`func(map[string]any) (healthy bool, failureMode string, err error)`）并统一折叠成 `ProbeResult`——探针返回 Go error 和探针返回 `healthy=false` 被引擎视为同一件事，调用方只需要处理一条失败路径。当前实现是进程内直接调用，尚未接入真正的隔离环境（E2B/Docker）；`Prober` 接口保证了替换实现不影响 `execution.Engine`。
 
-## 8. 当前范围与已知限制
+## 8. 标准动作库与无代码贡献层（`stdlib` + `cmd/cee`）
+
+前七节描述的是"引擎怎么跑"。这一节描述的是"别人怎么接进来"——两者是正交的：一个插件作者完全不需要理解 5.2 的执行循环，也能发布一个可运行的领域插件。
+
+### 8.1 两级贡献门槛
+
+| 层级 | 作者要会什么 | 交付物 |
+|---|---|---|
+| L1（无代码） | 只需写 JSON | 一份 manifest，`action_ref` 全部指向 `std.*` 标准动作 |
+| L2（有代码） | 需要写 Go | manifest + `Hooks` map，标准库表达不了的逻辑写成具名 Go 函数 |
+
+`manifest.Load(data, hooks, std)` 的绑定顺序是**标准库优先，Hooks 兜底**（见 `resolveAction`）：`action_ref` 先在 `std` 里查，查不到再查 `hooks`，两边都没有才报错。所以 L1 和 L2 可以在同一份 manifest 里混用。
+
+### 8.2 标准动作的形态：Factory，不是 Action
+
+标准动作注册进 `Library` 的不是 `execution.Action` 本身，而是一个 `Factory`：
+
+```go
+type Factory func(params map[string]any) (execution.Action, error)
+```
+
+`Factory` 接收该 Step 的 `"with"` 参数块，**在加载期一次性校验并绑定**，返回一个已经闭包好参数的 `Action`。这带来一个重要性质：**参数写错在 `Load` 阶段就失败，而不是流程跑到一半才炸**——和 `NORMATIVE_HANDBOOK` 第 3 节"manifest 写错应当加载时失败"是同一条原则。
+
+当前三个内置动作：
+
+| 动作 | 作用 | 是否影响控制流 |
+|---|---|---|
+| `std.set` | 把一组固定字段写进输出，用于终态/标记步骤 | 否 |
+| `std.require` | 断言 `field op value`；**不满足则该 Step 失败** | 是——失败走断路器 |
+| `std.rule_check` | 计算 `field op value` 的布尔结果写进 `result_field` | 否，只标注不跳转 |
+
+支持的 `op`：`eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `in`。数值比较统一走 `toFloat`，所以 JSON 里的 `10000`（`float64`）和 Go 里的 `int` 能正确比较。
+
+### 8.3 无代码怎么表达 if/else：借用断路器
+
+引擎本身**没有 if/else 原语**，Step 只有"成功走 `OnSuccess`"和"失败走断路器"两条出边。`std.require` 正是靠这一点来表达分支：
+
+```json
+{"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
+ "with": {"field": "amount", "op": "lte", "value": 10000},
+ "circuit_breaker_policy_ref": "route_to_flag", "on_success": "approve"}
+```
+
+读作："要求金额 ≤ 10000；满足则去 `approve`，不满足则由 `route_to_flag` 策略把我送去 `flag`。"
+
+这不是把断路器当分支语句滥用——而是一个刻意的设计取舍：**分支和异常兜底本来就共用同一条"偏离主干路径"的出边**，合并成一个机制意味着治理者审计"这个流程有哪些非主干出口"时，只需要看策略表一处（对应 5.3）。代价是可读性略绕，需要靠 `PolicyID` 命名（`route_to_flag`）把意图说清楚。
+
+完整可运行例子见 `examples/manifests/expense-guard.json`。
+
+### 8.4 静态校验（`manifest.Validate` + `cee validate`）
+
+`Validate(data, std)` 不执行任何东西，只做结构与引用完整性检查，产出 `Report`（`Error` 让 `Report.OK()` 为 false，`Warning` 不会）。当前覆盖：
+
+- `entry_step_id` / `on_success` 指向的 Step 是否真的存在于本 workflow
+- `circuit_breaker_policy_ref` 是否是已声明策略，且其 `fallback_step_ref` 是否存在于本 workflow
+- `sub_workflow_ref` / `intent.entry_step_ref` 是否对得上某个 `workflow_id`
+- `step_id` 重复、缺 `action_ref`、未知 `type`
+- 标准动作的 `with` 参数是否合法（直接调 `Factory` 试绑定）
+- 只警告不报错的两类：`node_id` 缺域前缀；`action_ref` 不是标准动作（它是否存在只能等 `Load` 时对着 Hooks 验）
+
+命令行入口：
+
+```bash
+go run ./cmd/cee validate examples/manifests/expense-guard.json
+```
+
+退出码 `0` = 无 error，`1` = 有 error，`2` = 用法/读文件出错——可直接用作 CI 门禁。这是把 `NORMATIVE_HANDBOOK` 的部分红线从"人工 Code Review"变成自动化检查的第一步。
+
+## 9. 当前范围与已知限制
 
 以下内容**尚未实现**，属于路线图但不在当前代码里，避免与实际状态混淆：
 
 - **Agent 兜底层**：此前讨论过"LLM 抽取连续失败后转受限 Agent 兜底"的两级升级机制，已明确决定不做，当前抽取失败直接由调用方决定下一步（通常是转人工），引擎本身不内置这一层。
 - **真实后端**：`intentrouter` 的向量检索、`execution` 的分布式/持久化状态存储、`sandbox` 的进程隔离、`llminjector` 的真实 LLM 调用，目前都是本地内存态的最小实现，用于验证协议本身，尚未接入 Qdrant / Temporal / E2B / 任何 LLM API。
-- **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）尚未以 `examples/` 或独立包的形式落地。
+- **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
 - **状态持久化**：`WorkflowResult.StatePointer` 字段已定义，但目前只是回填 `workflowRef` 字符串，没有真正对接外部存储或支持"从指针恢复执行"。
+- **校验器的盲区**：`manifest.Validate` 只做引用完整性检查，**不做可达性和环检测**——一个永远走不到的 Step、或者 `on_success` 首尾相接形成的死循环，当前都能通过校验。前者无害，后者会让 `Engine.Run` 挂住（执行循环没有步数上限）。
+- **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。

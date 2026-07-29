@@ -14,6 +14,16 @@
 - **强制机制**：`Injector.Extract` 只拷贝 `Schema` 里声明过的字段到 `StructuredPayload`，schema 之外的字段会被静默丢弃（见 `injector.go` 的 `clean` 构造逻辑）。**因此这条规则实际上是靠"不要在 Schema 里声明决策字段"来落地的**——Code Review 时如果看到一个 `Schema` 里出现 `is_valid`、`should_alert`、`severity_level` 这类字段名，必须打回。
 - 合法字段名的形状：名词性、可从原文直接验证真伪（`amount`、`merchant_name`、`invoice_id`）。非法字段名的形状：判断性、需要业务规则才能得出结论（`is_fraud`、`risk_score`、`action`）。
 
+#### 1.1.1 例外澄清：`std.rule_check` 为什么可以产出判断字段
+
+`stdlib.std.rule_check` 会往输出里写 `is_high_value` 这类字段名——形状上正好落在上一条列出的"非法字段名"里。这不是违规，但**必须理解清楚豁免的边界在哪，否则这条例外会被用来架空 1.1**：
+
+- 1.1 约束的是**谁做的判断**，不是**判断长什么样**。禁止的是"判断由 LLM 做出、代码照单全收"；`std.rule_check` 的判断由 manifest 里写死的 `field / op / value` 三元组决定，是纯代码、完全可复现、可静态审计（`cee validate` 就能看出它比的是什么），跟 LLM 无关。
+- 因此判据是**这个字段的值从哪来**：
+  - 来自 `llminjector` 的 `Schema` → 适用 1.1，判断字段一律打回。
+  - 来自 `stdlib` 或领域 Go Hook 的确定性计算 → 允许，因为它就是"业务规则"本身，而业务规则本来就该由代码承担。
+- **禁止的组合**：用 `llminjector` 抽出一个事实字段（合法），再让 `std.rule_check` 去比对它——这本身没问题；但**不允许**让 Extractor 直接输出一个已经算好的判断结果，再用 `std.set` 原样搬进 context 来"洗白"。Code Review 时如果看到 `std.set` 的 `fields` 值不是字面常量而是来自抽取结果的判断字段，按违反 1.1 处理。
+
 ### 1.2 Sandbox Probe 必须只读/模拟，不能有真实副作用
 
 `sandbox.Probe` 注册的函数运行在"预演"阶段，**在真实 Step 执行之前**。探针内部不允许调用任何会修改外部状态的 API（转账、发通知、改配置、写数据库……）。
@@ -30,7 +40,9 @@
 
 ### 1.4 引擎包本身不允许出现行业逻辑
 
-`entities`、`execution`、`intentrouter`、`llminjector`、`sandbox`、`registry`、`manifest` 这七个包，**任何时候都不允许 import 或硬编码某个具体行业的概念**（不能出现 `if domainID == "finance"` 这类分支，不能有字段叫 `InvoiceAmount` 而不是通用的 `map[string]any`）。
+`entities`、`execution`、`intentrouter`、`llminjector`、`sandbox`、`registry`、`manifest`、`stdlib` 这八个包，**任何时候都不允许 import 或硬编码某个具体行业的概念**（不能出现 `if domainID == "finance"` 这类分支，不能有字段叫 `InvoiceAmount` 而不是通用的 `map[string]any`）。
+
+`stdlib` 尤其要守住这条：标准动作库天然会被"再加一个动作就能支持某某场景"的需求拉扯。判据是**动作名和参数里不能出现任何行业名词**——`std.require` 合法（它只知道"字段、运算符、值"），一个假想的 `std.check_invoice_total` 则非法，那属于领域插件自己的 Go Hook。
 
 - **为什么**：这是"引擎只认引用不认内容"的字面意义。一旦某个行业的假设混进引擎包，其他行业接入时就会遇到"看似通用实际上只适配了第一个行业"的问题。
 - **验证方法**：`registry/registry_test.go` 里的 `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` 是活文档——任何一次引擎改动之后，这个测试必须仍然只用两个词汇完全不重叠的领域（当前是 finance / security）就能验证通过，不需要为了让测试过而往引擎里加特殊分支。
@@ -56,7 +68,9 @@
 
 任何修改以下内容的 PR，提交前自查：
 
-- [ ] 是否触碰了 `entities`/`execution`/`intentrouter`/`llminjector`/`sandbox`/`registry`/`manifest` 七个引擎包？如果是，`registry_test.go` 的双域测试是否仍然通过、且未新增行业特化分支（对应第 1.4 条）。
+- [ ] 是否触碰了 `entities`/`execution`/`intentrouter`/`llminjector`/`sandbox`/`registry`/`manifest`/`stdlib` 八个引擎包？如果是，`registry_test.go` 的双域测试是否仍然通过、且未新增行业特化分支（对应第 1.4 条）。
+- [ ] 新增/修改 manifest 后，`go run ./cmd/cee validate <manifest.json>` 是否无 error。
+- [ ] 新增标准动作时，动作名与参数里是否不含任何行业名词（对应第 1.4 条）；若它会产出判断性字段，是否符合第 1.1.1 条的豁免边界。
 - [ ] 新增的 `Schema` 字段是否全部是事实性字段，没有决策字段混入（对应第 1.1 条）。
 - [ ] 新增的 `Probe` 实现是否只读/模拟,审查者需要能一眼确认没有真实副作用（对应第 1.2 条）。
 - [ ] 新增的 `CircuitBreakerPolicyRef` 使用是否指向了通过 `RegisterPolicy` 注册的策略,而不是在 `Action` 内部手写重试（对应第 1.3 条）。
