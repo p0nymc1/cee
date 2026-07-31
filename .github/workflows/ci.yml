@@ -82,7 +82,7 @@ jobs:
       - name: Run everything, capturing output
         run: |
           mkdir -p demo-output
-          for ex in crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do
+          for ex in rule_change crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do
             go run "./examples/$ex" | tee "demo-output/$ex.txt"
           done
           for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do

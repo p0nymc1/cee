@@ -125,16 +125,20 @@ implementation requires no change to them — this is "the engine knows referenc
 
 ## 5. Deterministic execution engine (`execution`)
 
-### 5.1 The two step shapes
+### 5.1 The three step shapes
 
-The `Step` interface has exactly two implementations, and its method is unexported
-(`circuitBreakerPolicyRef() string`), meaning **only `LeafStep` and `CompositeStep` in this package can satisfy it**.
-Step shape is closed at the type-system level; there is no third kind:
+The `Step` interface's method is unexported (`circuitBreakerPolicyRef() string`), meaning **only types defined in
+this package can satisfy it** — step shape is closed at the type-system level, and no outside package can add one.
+There are currently three:
 
 - `LeafStep`: an atomic action. Its `Run Action` field is a piece of deterministic code
   (`func(ctx map[string]any) (map[string]any, error)`).
 - `CompositeStep`: points at a named sub-`Workflow` (`SubWorkflowRef`), letting DAGs nest and reuse rather than
   flattening every process to one grain.
+- `ParallelStep`: points at N named sub-`Workflow`s (`Branches`), run concurrently and joined afterwards. See 5.9.
+
+What is closed is the set itself, not its size. Adding a shape means changing the engine and passing its tests; a
+plugin cannot slip in a fourth from outside.
 
 ### 5.2 The execution loop
 
@@ -444,6 +448,85 @@ operator — which one, waiting on what, claimed when — and a person decides w
 `MemoryStore.Release` is a no-op, which is also honest: it disappears with the process, so "a claim outliving the
 process" cannot happen, and pretending otherwise would promise durability an in-memory map cannot deliver.
 
+### 5.9 Parallelism and joins (`ParallelStep`)
+
+A step used to have exactly one `on_success` out-edge, so "run three independent checks at once and decide when they
+are all back" had to be flattened into a sequence, or written by hand in an L2 Go hook with its own goroutines. The
+latter is the worse outcome: **dropping to Go in order to express a shape bypasses the no-code contribution tier**,
+which is the precondition for a plugin ecosystem.
+
+A `ParallelStep` names a set of sub-workflows as branches:
+
+```json
+{"step_id": "run_checks", "type": "parallel",
+ "branches": ["onboarding.credit_check", "onboarding.sanctions_check", "onboarding.address_check"],
+ "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "require_all_clear"}
+```
+
+Each branch receives **its own copy of the incoming context**, runs on its own goroutine, and the results join
+afterwards.
+
+#### 5.9.1 Genuinely concurrent, yet independent of scheduling
+
+This is the only genuinely hard part of the section: determinism is the entire thesis, and real concurrency is the
+most natural way to lose it.
+
+So scheduling decides only **when** work happens, never **what the answer is**:
+
+- **Branches join in declaration order**, not completion order.
+- **Traces concatenate in declaration order**, not completion order.
+
+A slow branch and a fast one therefore produce byte-identical traces and outputs on every run. Locked down by
+`TestParallelJoinIsDeterministicWhateverTheSchedulingOrder`, which runs one workflow twenty times with a deliberate
+delay in one branch and requires the traces to match exactly.
+
+Branches **cannot see each other's writes** (each starts from a copy of the incoming context). This is not isolation
+for its own sake: it is the precondition that makes the order-independence above true rather than usually true. If
+branches could observe each other, the result would depend on which ran first.
+
+#### 5.9.2 Two branches writing one field: refused, not arbitrated
+
+Picking a winner by declaration order would be deterministic and **still wrong** — nothing in the workflow says which
+should win. So the engine reports `*ConflictingBranchWrites` and refuses to join.
+
+The check is based on **each branch's delta against the incoming context**, not a direct comparison of branch outputs.
+That distinction is necessary: a sub-workflow's `Output` contains all the context it inherited, so "A changed `status`
+and B never touched it" would be misread as a conflict if outputs were compared directly.
+
+- Same field, same value: not a conflict.
+- One branch changed it, another left it alone: not a conflict.
+- Same field, different values: refused.
+
+Conflicts, like `*NoBranches` and a runaway branch, **bypass the circuit breaker**, for the reason given in 5.4: a
+breaker absorbs business failures, and letting a fallback swallow a structural defect hides the bug. Locked down by
+`TestAConflictIsNotSwallowedByACircuitBreaker`.
+
+#### 5.9.3 Failure, panics and suspension
+
+- **Every branch is awaited before anything is reported.** Returning early would leave goroutines still running.
+- **Every failed branch is reported**, not just the first, in declaration order (`*BranchesFailed`). An operator needs
+  to know which two of three checks broke.
+- Ordinary business failures **do reach the breaker**, and `cee.failure_reason` carries every branch's reason.
+- **A panicking branch becomes `*BranchPanicked`.** A panic inside a goroutine cannot be recovered by the caller and
+  would take the process down — a regression against today's behaviour, where a panicking action unwinds to whoever
+  called `Run`. Converting it preserves the existing blast radius and names the branch responsible.
+- **Suspending inside a branch is refused.** Branches run at `depth+1`, so the existing nested-suspension rule from
+  5.5 applies and returns `*NestedSuspensionUnsupported`. Resuming would require reconstructing the whole fan-out call
+  stack, which `State` does not record.
+
+#### 5.9.4 Static validation
+
+`cee validate` catches an empty branch list, a branch naming no `workflow_id`, and the same branch listed twice (which
+would join a workflow against itself). A single branch is a warning rather than an error — legal, just a composite
+step spelled the long way.
+
+**Cycle detection follows branch edges**: a branch pointing back at its own parent is a cross-workflow cycle that
+overflows the stack at runtime, so it has to be caught during validation. Locked down by
+`TestValidateCatchesACycleThroughABranch`.
+
+A complete no-code example is `examples/manifests/onboarding-checks.json`: three independent screening checks fanned
+out and joined, then two thresholds, with no Go at all.
+
 ## 6. Edge LLM injector (`llminjector`)
 
 The core behaviour of `Injector.Extract` is not "call an LLM" but **filter the LLM's output**:
@@ -668,13 +751,13 @@ actual state:
   (network intrusion detection, market surveillance). **What has not been done is abstracting them into reusable
   template packages** — each is currently a standalone example that a new adopter modifies by hand, rather than
   parameterises.
-- **Parallelism and joins**: the engine has no fan-out / fan-in primitive; a step has one `on_success` out-edge.
-  Processes with parallel branches must be serialised, or handle concurrency themselves in an L2 Go hook.
 - **No suspension TTL or timeout escalation**: waiting has no end — see the `filestore` note below.
-- **The registration path is not concurrency-safe**: the engine's `workflows` / `policies` are plain, unlocked maps, so
-  only **start-up registration** is supported. Every current caller registers everything before serving, so it is safe
-  today; but hot-loading an L1 manifest at runtime would race with concurrent `Run` calls. A lock must land before
-  plugin hot-distribution can.
+- **Hot-loading is still not provided**: the engine's registration path is now guarded by an `RWMutex`, so registering
+  while running is no longer a data race. But nothing in the repo watches a directory, discovers new manifests and
+  re-registers them. The lock was the precondition, not the feature.
+- **Observers must now be concurrency-safe**: branches run concurrently, so an `Observer` is called from several
+  goroutines at once. Both implementations in this repo, `scorecard.Recorder` and `replay.Recorder`, hold mutexes; a
+  third-party implementation has to provide its own safety.
 - **Nested suspension**: suspension (see 5.5) currently supports only top-level workflows. A step suspending inside a
   sub-workflow returns `*NestedSuspensionUnsupported` — resuming it would require reconstructing the whole composite
   call stack, and `State` does not record stack frames. This is a deliberate refusal rather than a best-effort

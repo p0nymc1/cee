@@ -46,8 +46,9 @@ cee/
   bench/          benchmark batches: run standard events through plugins, aggregate Scorecards, rank
   cmd/cee/        CLI: validate / lint / list / install / bench / draft / serve
   docs/           this document's directory
-  examples/       seven runnable examples, all compiled and tested with the repo
+  examples/       eight runnable examples, all compiled and tested with the repo
     quickstart/            minimal integration: a refund desk (pay / park for a manager / blocked by a probe)
+    rule_change/           change one rule, replay past decisions, compute which flip
     security_monitoring/   L2 example: Go plugin + sandbox gating + breaker escalation to human review
     network_detection/     ATT&CK matching + blast-radius guardrails on containment
     crypto_surveillance/   live market anomaly monitoring (uses the network)
@@ -186,6 +187,28 @@ community L1 tier. Standard actions take parameters via each step's `with` block
 `std.require` is the idiom for branching in an engine with no if/else: the condition holding takes `on_success`, and it
 not holding **fails**, routing through `circuit_breaker_policy_ref` to a fallback step. Complete runnable example:
 `examples/manifests/expense-guard.json`.
+
+### Parallel branches (`type: "parallel"`)
+
+When several independent checks should run at once and be decided together, use a `parallel` step whose branches are
+sub-workflows:
+
+```json
+{"step_id": "run_checks", "type": "parallel",
+ "branches": ["onboarding.credit_check", "onboarding.sanctions_check"],
+ "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "decide"}
+```
+
+What to know (detail in specification 5.9):
+
+- Branches really do run concurrently, but **the join and the trace always follow declaration order**, so the result
+  does not depend on which finishes first.
+- Branches cannot see each other's writes; each starts from a copy of the incoming context.
+- **Two branches writing the same field with different values is refused** (`*ConflictingBranchWrites`) rather than
+  arbitrated by order — have them write different fields.
+- A branch cannot suspend (`std.suspend` inside one returns `*NestedSuspensionUnsupported`).
+
+Complete no-code example: `examples/manifests/onboarding-checks.json`.
 
 ### Self-check with `cee validate` before submitting
 

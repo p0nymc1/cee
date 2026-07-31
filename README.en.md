@@ -16,6 +16,44 @@
 > Every number in both documents is reproducible via `cee bench`, `make stats`, or CI. Anything not yet measured is
 > labelled a target, never a result.
 
+## Start with this one thing
+
+It is the capability nothing else offers, and the fastest way to understand CEE — **before you change a rule, compute
+which past decisions it would change**:
+
+```bash
+go run ./examples/rule_change
+```
+```
+Last quarter, under the rule in force (auto-approve at or under $100):
+  37 refunds -- 29 paid, 8 held
+
+Proposed change: tighten the limit to $50.
+Replaying the same 37 refunds against the new rule:
+
+  15 of 37 decisions flip
+
+    r-0005   $63     paid -> held
+    r-0006   $95     paid -> held
+    ...
+
+  6 more were held before and are held now. The outcome stands; only the
+  reason given to the operator changes.
+```
+
+Risk-model tuning, threshold tightening, policy changes — today these are all "ship it and see." Here they become
+**see it before you ship**.
+
+An agent cannot do this. Not because it isn't smart enough, but because **its plan only exists during execution**, so
+there is nothing to inspect. Temporal has durable retries and Airflow has scheduling, but computing which historical
+decisions a change would flip needs a deterministic engine.
+
+One detail worth noticing: a refund whose amount falls inside the flip range did not flip — because **probe verdicts
+come from the recording rather than a live check**, so an account that was closed at the time is still closed. The
+rule is the only thing that moved. Implementation: [`replay`](replay/replay.go).
+
+---
+
 CEE is not an application for one industry. It is a **business-agnostic deterministic execution protocol**. Its bet is
 simple: most business processes stuffed into "agents" have a well-defined path and do not need an LLM deciding each
 step. The one place an LLM is genuinely needed is turning unstructured input into structured fields.
@@ -125,15 +163,10 @@ retry semantics is Temporal's business; CEE does not do that.
 
 ### What's still missing
 
-- **No parallel primitives**: the engine has no fan-out / fan-in. Processes with parallel branches must currently be
-  serialised, or drop down to an L2 Go hook.
 - **Waiting has no end**: there is no TTL and no timeout escalation, so an approval nobody answers parks forever.
 - **You supply the identity source**: `httpapi` provides an `Identify` hook and engine-side authorisation is in place
   (audience + `Authorizer`, deny by default, a refusal does not consume the pointer). Wiring it to a real JWT / mTLS /
   session is the integrator's job, and the repo does not yet ship a reference implementation.
-- **Registration is not concurrency-safe**: the engine's workflow and policy registries are plain maps, so only
-  start-up registration is supported. Hot-loading an L1 manifest at runtime would race with concurrent `Run` calls —
-  a lock has to land before plugin hot-distribution can.
 - **L2 plugins cannot be hot-loaded**: plugins needing a Go hook must be compiled into your binary, so changing one
   means shipping a release. Only pure-JSON L1 plugins can be distributed as data.
 
@@ -152,6 +185,7 @@ go run ./examples/crypto_surveillance   # live market anomaly screening (uses th
 go run ./examples/network_detection      # ATT&CK matching + blast-radius guardrails on containment
 go run ./examples/human_approval         # L1, zero Go: suspend / resume
 go run ./examples/meta_scenarios         # ticket routing / scheduling / data sync
+go run ./examples/rule_change            # change one rule, compute which past decisions flip
 ```
 
 Real output from every example is published at **https://p0nymc1.github.io/cee/**, regenerated hourly by CI — not
@@ -253,7 +287,7 @@ scorecard/       per-request metrics (vs a naive agent baseline)
 bench/           benchmark batches + leaderboard
 catalog/         community distribution layer (index.json + plugins/), ships two L1 samples
 cmd/cee/         command-line tool
-examples/        seven runnable examples (quickstart / network_detection / crypto_surveillance /
+examples/        eight runnable examples (quickstart / rule_change / network_detection / crypto_surveillance /
                  human_approval / meta_scenarios / security_monitoring / local_netwatch)
 satellites/      optional satellite modules, each with its own go.mod: dockersandbox (local container sandbox),
                  httpsandbox (remote/cloud sandbox), wasmhooks (trust boundary for untrusted code)

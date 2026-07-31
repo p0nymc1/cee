@@ -103,12 +103,15 @@ type WorkflowResult struct {
 
 ## 5. 确定性执行引擎（`execution`）
 
-### 5.1 Step 的两种形态
+### 5.1 Step 的三种形态
 
-`Step` 接口只有两个实现，且接口方法未导出（`circuitBreakerPolicyRef() string`），意味着**只有本包内的 `LeafStep` 和 `CompositeStep` 能满足这个接口**——Step 的形态在类型系统层面就是封闭的，不存在第三种：
+`Step` 接口的方法未导出（`circuitBreakerPolicyRef() string`），意味着**只有本包内定义的类型能满足它**——Step 的形态在类型系统层面是封闭的，外部包加不进新形态。目前有三种：
 
 - `LeafStep`：原子动作，`Run Action` 字段是一段确定性代码（`func(ctx map[string]any) (map[string]any, error)`）。
 - `CompositeStep`：指向一个具名子 `Workflow`（`SubWorkflowRef`），允许 DAG 嵌套复用，而不必把每个流程拍平成同一粒度。
+- `ParallelStep`：指向 N 个具名子 `Workflow`（`Branches`），并发执行后汇合，见 5.9。
+
+封闭的是集合本身，不是它的大小。新增一种形态必须改引擎并通过引擎的测试；插件无法从外面塞进第四种。
 
 ### 5.2 执行循环
 
@@ -315,6 +318,61 @@ engine.SetStore(store)
 
 `MemoryStore.Release` 是空实现，这也是诚实的：它随进程一起消失，根本不存在"claim 比进程活得久"这回事，假装有反而是承诺了一个内存 map 兑现不了的持久性。
 
+### 5.9 并行与汇合（`ParallelStep`）
+
+引擎原本每个 Step 只有一条 `on_success` 出边，于是"三项独立检查同时做，都回来了再决定"这类流程只能拍平成串行，或者掉到 L2 Go Hook 里自己起 goroutine。后者尤其糟：**为了表达一个形状而下沉到 Go，等于绕过了无代码贡献层**，而那一层正是插件生态的前提。
+
+`ParallelStep` 声明一组子 workflow 作为分支：
+
+```json
+{"step_id": "run_checks", "type": "parallel",
+ "branches": ["onboarding.credit_check", "onboarding.sanctions_check", "onboarding.address_check"],
+ "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "require_all_clear"}
+```
+
+每个分支拿到**incoming context 的一份拷贝**，在各自的 goroutine 上跑，结束后汇合。
+
+#### 5.9.1 真并发，但结果与调度无关
+
+这是整节唯一真正困难的地方：确定性是本项目的全部主张，而真并发是丢掉它最自然的方式。
+
+所以调度只决定**什么时候做**，从不决定**答案是什么**：
+
+- **汇合按声明顺序**，不是完成顺序。
+- **trace 按声明顺序拼接**，不是完成顺序。
+
+于是一个慢分支和一个快分支，每次跑出来的 trace 和 output 逐字节相同。由 `TestParallelJoinIsDeterministicWhateverTheSchedulingOrder` 锁住——它把同一个流程跑 20 次，其中一个分支故意加了延迟，要求 trace 完全一致。
+
+分支之间**互相看不到对方的写入**（各自从 incoming context 的拷贝出发）。这不是隔离洁癖，而是上面那条"与顺序无关"成立的前提：如果分支能看见彼此，结果就取决于谁先跑到。
+
+#### 5.9.2 两个分支写同一个字段：拒绝，而不是仲裁
+
+按声明顺序取胜者是确定性的，但**仍然是错的**——workflow 里没有任何一句话说过谁该赢。所以引擎报 `*ConflictingBranchWrites` 并拒绝汇合。
+
+判定基于**每个分支相对 incoming context 的增量**，不是分支输出之间的直接比较。这个区别是必要的：子流程返回的 `Output` 包含它继承的全部 context，所以"A 改了 `status`、B 根本没碰"如果按输出比对，会被误判成冲突。
+
+- 同字段同值：不算冲突。
+- 一个分支改了、另一个没碰：不算冲突。
+- 同字段不同值：拒绝。
+
+冲突与 `*NoBranches`、失控分支一样**绕过断路器**，理由同 5.4：断路器兜的是业务失败，让 fallback 吞掉一个结构性缺陷等于把 bug 藏起来。由 `TestAConflictIsNotSwallowedByACircuitBreaker` 锁住。
+
+#### 5.9.3 失败、panic 与挂起
+
+- **等所有分支结束再报**，不提前返回——提前返回会留下还在跑的 goroutine。
+- **每个失败的分支都进报告**，不只是第一个，且按声明顺序排列（`*BranchesFailed`）。运维需要知道三项检查里坏了哪两项。
+- 普通业务失败**走断路器**，`cee.failure_reason` 会带上全部分支的失败原因。
+- **分支 panic 转成 `*BranchPanicked`**。goroutine 里的 panic 无法被调用方 `recover`，会直接杀进程——那是相对现状的倒退（今天一个 panic 的 Action 会一路冒泡到 `Run` 的调用方）。转成错误既保住了原有的影响范围，又能指名是哪个分支。
+- **分支里挂起被拒绝**：分支跑在 `depth+1`，因此沿用 5.5 已有的嵌套挂起限制，返回 `*NestedSuspensionUnsupported`。恢复它需要还原整个 fan-out 的调用栈，而 `State` 没有记录。
+
+#### 5.9.4 静态校验
+
+`cee validate` 会拦下：分支列表为空、分支指向不存在的 workflow_id、同一个分支列两次（那等于把一个 workflow 跟它自己汇合）。只有一个分支时降为 warning——合法，只是把 composite step 写长了。
+
+**环检测会跟着分支边走**：分支指回自己的父 workflow 是一个跨 workflow 的环，运行时会栈溢出，所以必须在校验期拦下。由 `TestValidateCatchesACycleThroughABranch` 锁住。
+
+完整的无代码范例见 `examples/manifests/onboarding-checks.json`：三项独立筛查 fan-out 再汇合，然后两道阈值，全程零 Go。
+
 ## 6. 边缘 LLM 注入器（`llminjector`）
 
 `Injector.Extract` 的核心行为不是"调用 LLM"，而是**过滤 LLM 的输出**：
@@ -463,9 +521,9 @@ rank plugin           determinism  events   errors   LLM calls eliminated vs age
 - **Agent 兜底层**：此前讨论过"LLM 抽取连续失败后转受限 Agent 兜底"的两级升级机制，已明确决定不做，当前抽取失败直接由调用方决定下一步（通常是转人工），引擎本身不内置这一层。
 - **真实后端**：**这一条已大部分兑现，仅沙盒的内置实现仍是进程内模拟**。`llminjector` 可挂 `llmhttp`（真实 OpenAI 兼容端点）、`intentrouter` 可挂 `embedhttp`（真实 embedding 语义匹配）、`execution.Store` 可挂 `filestore`（落盘、跨重启存活）、`execution.Prober` 可挂 `satellites/dockersandbox`（本地容器）或 `satellites/httpsandbox`（远程/云沙盒）。核心内置的 `sandbox.Sandbox` 仍是进程内直接调用，用于开发与测试。分布式编排（Temporal 类语义）**明确不做**，见第 6 章适用边界。
 - **场景模板库**：六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）**均已落地为可运行示例**（见 `examples/`），另含两个真实案例（网络入侵检测、市场异常监控）。**尚未做的是把它们抽象成可复用的模板包**——目前每个都是独立示例，新接入者要照着改，而不是填参数。
-- **并行与汇合**：引擎没有 fan-out / fan-in 原语，Step 只有一条 `on_success` 出边。含并行分支的流程只能串行化，或掉到 L2 Go Hook 里自己并发。
 - **挂起没有 TTL 与超时转派**：等待没有尽头，见下面 `filestore` 那条。
-- **注册路径不是并发安全的**：`Engine` 的 `workflows` / `policies` 是裸 map，无锁，因此只支持**启动期注册**。当前所有调用方都在启动期注册完再开始服务，所以是安全的；但运行时热加载 L1 manifest 会与并发 `Run` 竞争。做插件热分发之前必须先补锁。
+- **热加载仍未提供**：`Engine` 的注册路径现在有 `RWMutex` 保护，运行中注册不再是数据竞争；但仓库没有提供监听目录、发现新 manifest 并重新注册的机制。锁是前置条件，不是热加载本身。
+- **Observer 现在必须并发安全**：分支并发执行意味着 `Observer` 会被多个 goroutine 同时回调。仓库内的 `scorecard.Recorder` 和 `replay.Recorder` 都持有锁；第三方实现需要自行保证。
 - **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
 - **`filestore` 没有过期回收**：挂起的流程会一直躺在目录里。一个永远等不到审批的流程不会自己消失，也没有 TTL 或归档机制——运维得自己拿 `Pending()` 做清理。
 - **`filestore` 不做跨进程加锁**，但**"一次性"保证本身是跨进程成立的**——见 5.7，它靠的是 `rename`/`unlink` 的原子性，不需要锁。缺的是公平性（谁先到谁拿到），以及"孤儿要靠人来判"（见 5.8，这是刻意的，不是遗漏）。

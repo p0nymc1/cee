@@ -14,6 +14,36 @@
 > 想了解设计动机、现状与路线图：[**技术白皮书**](docs/WHITEPAPER.md)（技术评审用）· [**路演版**](docs/PITCH.md)（十页，先讲问题再讲架构）。
 > 两份文档里每个数字都可由 `cee bench` 或 CI 复现，未实测的指标一律标注为目标值。
 
+## 先看这一件事
+
+这是别的方案给不了的能力，也是理解 CEE 最快的入口——**改一条规则之前，先算出它会改变过去哪些决定**：
+
+```bash
+go run ./examples/rule_change
+```
+```
+上季度，在当时生效的规则下（≤ $100 自动放行）：
+  37 笔退款 —— 29 笔放行，8 笔挂起
+
+提议：把限额收紧到 $50。拿同样这 37 笔重放：
+
+  37 笔里有 15 笔决定翻转
+
+    r-0005   $63     paid -> held
+    r-0006   $95     paid -> held
+    ...
+
+  另有 6 笔之前挂起、现在仍然挂起。结论不变，只是给运维的理由变了。
+```
+
+风控调参、阈值收紧、策略变更，今天普遍是"改完上线看看"。这里变成**改之前先看**。
+
+Agent 做不到这件事，不是因为不够聪明，而是**它的计划只在执行过程中存在**，没有可供检验的对象。Temporal 有持久化重试、Airflow 有调度，但"算出这次改动会翻转哪些历史决定"只有确定性引擎做得到。
+
+有个细节值得注意：上面有一笔金额落在翻转区间里却没有翻转——因为**探针的裁决来自录像而不是实时检查**，当时已关闭的账户现在仍然是关闭的。变的只有规则本身。实现见 [`replay`](replay/replay.go)。
+
+---
+
 CEE 不是一个针对某个行业的应用，而是一套**跟业务无关的确定性执行协议**。它的赌注很简单：大多数被塞进"智能体"里的业务流程，本质上路径明确、不需要 LLM 每一步做决策；真正需要 LLM 的地方，只有"把非结构化输入转成结构化字段"这一件事。
 
 于是 CEE 把主控权交还给一台确定性状态机，LLM 被降级为一个**只做抽取、不做决策**的边缘工具。任何行业都可以把自己的流程作为"领域插件"接进来，而引擎代码一行都不用改。
@@ -103,10 +133,8 @@ sb.RegisterProbe("refund.account_open", func(ctx map[string]any) (bool, string, 
 
 ### 现在还缺的
 
-- **没有并行原语**：引擎没有 fan-out / fan-in，含并行分支的流程目前只能拆成串行，或掉到 L2 Go hook 里自己写。
 - **挂起没有尽头**：缺 TTL 与超时转派，等不到人的审批会一直挂着。
 - **身份源要自己接**：`httpapi` 提供 `Identify` 钩子、引擎侧的 audience + `Authorizer` 授权已就位（默认拒绝、拒绝不消耗指针），但把它接到真实 JWT / mTLS / 会话上是接入方的事，仓库里还没有参考实现。
-- **注册不是并发安全的**：`Engine` 的 workflow 与 policy 注册表是裸 map，只支持启动期注册。运行中热加载 L1 manifest 会与并发 `Run` 竞争——这是要做插件热分发之前必须先补的锁。
 - **L2 插件不能热加载**：需要 Go hook 的插件要编译进你的二进制，改了得重新发版；只有纯 JSON 的 L1 插件能当数据分发。
 
 ## 本地跑起来看看
@@ -122,6 +150,7 @@ go run ./examples/crypto_surveillance   # 实时行情异常监控（会联网�
 go run ./examples/network_detection      # ATT&CK 匹配 + 处置爆炸半径护栏
 go run ./examples/human_approval         # L1 零 Go：挂起/恢复
 go run ./examples/meta_scenarios         # 工单路由 / 调度 / 数据同步
+go run ./examples/rule_change            # 改一条规则，算出哪些历史决定会翻转
 ```
 
 每个示例的真实输出都在 **https://p0nymc1.github.io/cee/** 上，由 CI 每小时重跑生成——不是手写的。
@@ -214,7 +243,7 @@ scorecard/       单次请求度量（vs 朴素 Agent 基线）
 bench/           基准跑批 + 排行榜
 catalog/         社区分发层（index.json + plugins/），自带两个 L1 样例
 cmd/cee/         命令行工具
-examples/        七个可运行范例（quickstart / network_detection / crypto_surveillance /
+examples/        八个可运行范例（quickstart / rule_change / network_detection / crypto_surveillance /
                  human_approval / meta_scenarios / security_monitoring / local_netwatch）
 satellites/      可选卫星 module（各自独立 go.mod）：dockersandbox（本地容器沙盒）、
                  httpsandbox（远程/云沙盒）、wasmhooks（不可信代码信任边界）

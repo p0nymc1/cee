@@ -431,3 +431,50 @@ func TestOneRecordingCoversProbesAndExtractionsTogether(t *testing.T) {
 			len(recording.Extractions), len(recording.Probes))
 	}
 }
+
+func TestCompareOrdersDifferencesTheSameWayEveryTime(t *testing.T) {
+	rec := replay.Recording{
+		WorkflowID: "wf",
+		Trace:      []string{"a"},
+		Output: map[string]any{
+			"zebra": 1, "alpha": 1, "middle": 1, "gone": 1,
+			"cee.failure_reason": "old", "cee.failed_step": "s",
+		},
+	}
+	result := entities.WorkflowResult{
+		Trace: []string{"a"},
+		Output: map[string]any{
+			"zebra": 2, "alpha": 2, "middle": 2, "added": 9,
+			"cee.failure_reason": "new", "cee.failed_step": "t",
+		},
+	}
+
+	first := replay.Compare(rec, result, nil)
+	if len(first) < 6 {
+		t.Fatalf("expected several differences, got %d", len(first))
+	}
+	want := make([]string, len(first))
+	for i, d := range first {
+		want[i] = d.Field
+	}
+
+	for run := 0; run < 50; run++ {
+		got := replay.Compare(rec, result, nil)
+		if len(got) != len(want) {
+			t.Fatalf("run %d produced %d differences, want %d", run, len(got), len(want))
+		}
+		for i, d := range got {
+			if d.Field != want[i] {
+				t.Fatalf("run %d ordered differences as %v, want %v; a diff of a deterministic engine cannot itself be unordered",
+					run, got, want)
+			}
+		}
+	}
+
+	for i := 1; i < len(want); i++ {
+		if want[i-1] > want[i] {
+			t.Errorf("differences are not sorted by field: %v", want)
+			break
+		}
+	}
+}

@@ -3,6 +3,7 @@ package replay
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -187,21 +188,29 @@ func Compare(rec Recording, result entities.WorkflowResult, runErr error) []Diff
 		diffs = append(diffs, Difference{Field: "error", Before: rec.Error, After: runErr.Error()})
 	}
 
+	fields := make([]string, 0, len(rec.Output)+len(result.Output))
 	seen := map[string]bool{}
-	for key, before := range rec.Output {
+	for key := range rec.Output {
+		fields = append(fields, key)
 		seen[key] = true
-		after, present := result.Output[key]
-		if !present {
-			diffs = append(diffs, Difference{Field: "output." + key, Before: before, After: nil})
-			continue
-		}
-		if !sameValue(before, after) {
-			diffs = append(diffs, Difference{Field: "output." + key, Before: before, After: after})
+	}
+	for key := range result.Output {
+		if !seen[key] {
+			fields = append(fields, key)
 		}
 	}
-	for key, after := range result.Output {
-		if !seen[key] {
+	sort.Strings(fields)
+
+	for _, key := range fields {
+		before, hadBefore := rec.Output[key]
+		after, hasAfter := result.Output[key]
+		switch {
+		case hadBefore && !hasAfter:
+			diffs = append(diffs, Difference{Field: "output." + key, Before: before, After: nil})
+		case !hadBefore && hasAfter:
 			diffs = append(diffs, Difference{Field: "output." + key, Before: nil, After: after})
+		case !sameValue(before, after):
+			diffs = append(diffs, Difference{Field: "output." + key, Before: before, After: after})
 		}
 	}
 	return diffs

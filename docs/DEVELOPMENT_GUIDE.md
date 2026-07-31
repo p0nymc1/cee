@@ -41,8 +41,9 @@ cee/
   bench/          基准跑批：把标准事件跑过插件，聚合 Scorecard 并排名
   cmd/cee/        命令行工具：validate / lint / list / install / bench / draft / serve
   docs/           本文档所在目录
-  examples/       七个可运行范例，每个都跟仓库一起编译和测试
+  examples/       八个可运行范例，每个都跟仓库一起编译和测试
     quickstart/            最小接入：退款台（放行 / 挂起等经理 / 探针拦下）
+    rule_change/           改一条规则，重放历史决定，算出哪些会翻转
     security_monitoring/   L2 范例：Go 插件 + 沙盒门禁 + 断路器降级人工审批
     network_detection/     ATT&CK 匹配 + 处置爆炸半径护栏
     crypto_surveillance/   实时行情异常监控（会联网）
@@ -173,6 +174,25 @@ reg.RegisterDomain(*domain)
 ```
 
 `std.require` 是无 if/else 引擎里表达分支的惯用法：条件成立则走 `on_success`，不成立则**失败**，从而经由 `circuit_breaker_policy_ref` 路由到 fallback step。完整可运行范例见 `examples/manifests/expense-guard.json`。
+
+### 并行分支（`type: "parallel"`）
+
+几项互不依赖的检查要同时做、都回来了再决定时，用 `parallel` step，分支是一组子 workflow：
+
+```json
+{"step_id": "run_checks", "type": "parallel",
+ "branches": ["onboarding.credit_check", "onboarding.sanctions_check"],
+ "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "decide"}
+```
+
+要点（细节见技术说明书 5.9）：
+
+- 分支真并发跑，但**汇合与 trace 一律按声明顺序**，所以结果跟谁先跑完无关。
+- 分支之间看不到对方的写入，各自从 incoming context 的拷贝出发。
+- **两个分支写同一个字段不同的值会被拒绝**（`*ConflictingBranchWrites`），不会按顺序仲裁——让它们写不同字段。
+- 分支里不能挂起（`std.suspend` 在分支中会报 `*NestedSuspensionUnsupported`）。
+
+完整无代码范例见 `examples/manifests/onboarding-checks.json`。
 
 ### 提交前用 `cee validate` 自查
 

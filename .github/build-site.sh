@@ -82,6 +82,18 @@ written by hand. Built $built.
   <li><b>0</b><span>external dependencies</span></li>
 </ul>
 
+<h2>Changing a rule, before you ship it</h2>
+<p>The dividend of a deterministic engine, and the one thing no agent can offer: replay last
+quarter's decisions against a proposed rule and see exactly which ones flip. The plan an agent
+follows exists only while it runs, so there is nothing to replay. Note that one refund inside
+the affected range does not flip — probe verdicts come from the recording rather than a live
+check, so an account that was closed at the time stays closed, and the rule is the only thing
+that moved.</p>
+HTML
+
+block demo-output/rule_change.txt >> "$out/index.html"
+
+cat >> "$out/index.html" <<'HTML'
 <h2>Crypto market surveillance — live data</h2>
 <p>Fixed thresholds over live quotes, swept hourly. This is anomaly flagging, not investment
 advice: every rule is a constant in a manifest or in deterministic Go, and no model is asked

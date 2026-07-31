@@ -100,14 +100,29 @@ Step four above is not decoration. It is what this architecture uniquely enables
 
 > **Before you change a rule, compute which past decisions it would change.**
 
+This is not a sketch. `go run ./examples/rule_change` produces it today:
+
 ```
-Tighten the approval limit from $100 to $50
-Replay a refund of $80 that was already approved:
-    approved  →  escalated to a human
+Last quarter, under the rule in force (auto-approve at or under $100):
+  37 refunds -- 29 paid, 8 held
+
+Proposed change: tighten the limit to $50.
+Replaying the same 37 refunds against the new rule:
+  15 of 37 decisions flip
+
+    r-0005   $63     paid -> held
+    r-0006   $95     paid -> held
+    ...
+
+  6 more were held before and are held now -- the outcome stands, only the reason changed.
 ```
 
 Risk-model tuning, threshold tightening, policy changes — today these are all "ship it and see." Here they become
 **see it before you ship.**
+
+One refund inside the flip range did not flip: **probe verdicts come from the recording rather than a live check**, so
+an account closed at the time is still closed. The rule is the only thing that moved. That is precisely why the "how
+many flipped" number can be trusted — the outside world is pinned.
 
 An agent cannot do this — **not because it isn't smart enough, but because its plan only exists during execution.**
 There is nothing to inspect.
@@ -133,7 +148,7 @@ project claiming determinism should not have hand-maintained demo material.
 
 | | |
 |---|---|
-| Code | 10,213 lines, 25 packages, 220 tests (+17 satellite tests) |
+| Code | 11,566 lines, 26 packages, 251 tests (+17 satellite tests) |
 | External dependencies | **0** (compiles offline; no third-party code to audit) |
 | Open source | Apache-2.0, published |
 | Scenario validation | 6 general categories + 2 real cases (network intrusion detection, market surveillance) |
@@ -162,7 +177,6 @@ Stated honestly, because it determines what the investment is for:
 |---|---|---|
 | Drafting path unvalidated against a real model | Logic and all four gates are tested (with stubs), but "does the model get it right first time" is unmeasured | One real integration and tuning pass |
 | No identity source wired | The HTTP layer and engine authorisation are both in place and deny by default, but connecting real JWT/mTLS needs a reference implementation | An integration template |
-| No parallelism | Real processes have parallel branches; without fan-out/fan-in they must be serialised or hand-written in Go — which bypasses the no-code tier | A fan-out/fan-in primitive |
 | Metrics measure output only | Measures calls saved, not intents missed | Diagnostic metrics |
 | **Zero ecosystem** | The catalog has 2 plugins, both ours. The whole community flywheel is built and unfuelled | Distribution, not code |
 
