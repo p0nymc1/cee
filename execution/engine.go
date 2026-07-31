@@ -3,6 +3,7 @@ package execution
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/p0nymc1/cee/entities"
 )
@@ -103,6 +104,7 @@ type Observer interface {
 }
 
 type Engine struct {
+	mu         sync.RWMutex
 	sandbox    Prober
 	observer   Observer
 	workflows  map[string]*Workflow
@@ -114,6 +116,8 @@ type Engine struct {
 }
 
 func (e *Engine) SetStore(s Store) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.store = s
 }
 
@@ -128,6 +132,8 @@ func NewEngine(sandbox Prober) *Engine {
 }
 
 func (e *Engine) SetLimits(maxSteps, maxDepth int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if maxSteps > 0 {
 		e.maxSteps = maxSteps
 	}
@@ -137,15 +143,53 @@ func (e *Engine) SetLimits(maxSteps, maxDepth int) {
 }
 
 func (e *Engine) SetObserver(o Observer) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.observer = o
 }
 
 func (e *Engine) RegisterWorkflow(w *Workflow) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.workflows[w.WorkflowID] = w
 }
 
 func (e *Engine) RegisterPolicy(p CircuitBreakerPolicy) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.policies[p.PolicyID] = p
+}
+
+func (e *Engine) workflow(ref string) (*Workflow, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	w, ok := e.workflows[ref]
+	return w, ok
+}
+
+func (e *Engine) policy(ref string) (CircuitBreakerPolicy, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	p, ok := e.policies[ref]
+	return p, ok
+}
+
+func (e *Engine) prober() Prober {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sandbox
+}
+
+func (e *Engine) currentStore() Store {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store
+}
+
+func (e *Engine) limits() (int, int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.maxSteps, e.maxDepth
 }
 
 func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error) {
@@ -157,11 +201,12 @@ func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entitie
 }
 
 func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
-	if depth > e.maxDepth {
-		return entities.WorkflowResult{}, &DepthLimitExceeded{WorkflowID: workflowRef, Limit: e.maxDepth}
+	maxSteps, maxDepth := e.limits()
+	if depth > maxDepth {
+		return entities.WorkflowResult{}, &DepthLimitExceeded{WorkflowID: workflowRef, Limit: maxDepth}
 	}
 
-	workflow, ok := e.workflows[workflowRef]
+	workflow, ok := e.workflow(workflowRef)
 	if !ok {
 		return entities.WorkflowResult{}, fmt.Errorf("no workflow registered for %q", workflowRef)
 	}
@@ -177,10 +222,10 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 
 	for stepID != "" {
 		steps++
-		if steps > e.maxSteps {
+		if steps > maxSteps {
 			return entities.WorkflowResult{}, &StepLimitExceeded{
 				WorkflowID:  workflowRef,
-				Limit:       e.maxSteps,
+				Limit:       maxSteps,
 				RecentSteps: tail(trace, 10),
 			}
 		}
@@ -214,14 +259,15 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 
 		case *LeafStep:
 			if s.SandboxProbeRef != "" {
-				if e.sandbox == nil {
+				sb := e.prober()
+				if sb == nil {
 					return entities.WorkflowResult{}, fmt.Errorf(
 						"step %q declares sandbox_probe_ref %q but no sandbox is configured",
 						s.StepID, s.SandboxProbeRef,
 					)
 				}
 				e.observe(func(o Observer) { o.ObserveSandboxProbe(workflow.WorkflowID, s.StepID) })
-				probeResult, err := e.sandbox.Probe(entities.ProbeRequest{
+				probeResult, err := sb.Probe(entities.ProbeRequest{
 					ProbeRef:    s.SandboxProbeRef,
 					DomainID:    workflow.DomainID,
 					StepContext: ctx,
@@ -282,7 +328,8 @@ func (e *Engine) suspend(
 			WorkflowID: workflow.WorkflowID, StepID: stepID,
 		}
 	}
-	if e.store == nil {
+	store := e.currentStore()
+	if store == nil {
 		return entities.WorkflowResult{}, &NoSuspensionSupport{
 			WorkflowID: workflow.WorkflowID, StepID: stepID,
 		}
@@ -301,13 +348,15 @@ func (e *Engine) suspend(
 		Ctx:        ctx,
 		Trace:      trace,
 	}
-	if err := e.store.Save(state); err != nil {
+	if err := store.Save(state); err != nil {
 		return entities.WorkflowResult{}, fmt.Errorf("could not save suspended workflow: %w", err)
 	}
 
-	if so, ok := e.observer.(SuspensionObserver); ok {
-		so.ObserveSuspension(workflow.WorkflowID, stepID)
-	}
+	e.observe(func(o Observer) {
+		if so, ok := o.(SuspensionObserver); ok {
+			so.ObserveSuspension(workflow.WorkflowID, stepID)
+		}
+	})
 	return entities.WorkflowResult{Output: ctx, StatePointer: pointer, Trace: trace}, nil
 }
 
@@ -316,15 +365,16 @@ func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.Wor
 }
 
 func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (entities.WorkflowResult, error) {
-	if e.store == nil {
+	store := e.currentStore()
+	if store == nil {
 		return entities.WorkflowResult{}, fmt.Errorf("no Store is configured; call Engine.SetStore first")
 	}
-	state, err := e.store.Load(pointer)
+	state, err := store.Load(pointer)
 	if err != nil {
 		return entities.WorkflowResult{}, err
 	}
 
-	workflow, ok := e.workflows[state.WorkflowID]
+	workflow, ok := e.workflow(state.WorkflowID)
 	if !ok {
 		return entities.WorkflowResult{}, fmt.Errorf(
 			"suspended workflow %q is no longer registered", state.WorkflowID)
@@ -344,7 +394,7 @@ func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (
 		return entities.WorkflowResult{}, err
 	}
 
-	claimed, err := e.store.Consume(pointer)
+	claimed, err := store.Consume(pointer)
 	if err != nil {
 		return entities.WorkflowResult{}, fmt.Errorf("could not claim resume pointer: %w", err)
 	}
@@ -355,7 +405,7 @@ func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (
 	}
 	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, resumeCtx, 0)
 
-	if releaseErr := e.store.Release(pointer); releaseErr != nil && err == nil {
+	if releaseErr := store.Release(pointer); releaseErr != nil && err == nil {
 		return result, fmt.Errorf("run finished but its claim could not be released: %w", releaseErr)
 	}
 
@@ -364,8 +414,11 @@ func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (
 }
 
 func (e *Engine) observe(fn func(Observer)) {
-	if e.observer != nil {
-		fn(e.observer)
+	e.mu.RLock()
+	o := e.observer
+	e.mu.RUnlock()
+	if o != nil {
+		fn(o)
 	}
 }
 
@@ -377,7 +430,7 @@ const (
 
 func (e *Engine) onFailure(step Step, reason string, ctx map[string]any) (string, map[string]any, error) {
 	if ref := step.circuitBreakerPolicyRef(); ref != "" {
-		if policy, ok := e.policies[ref]; ok && policy.FallbackStepRef != "" {
+		if policy, ok := e.policy(ref); ok && policy.FallbackStepRef != "" {
 			return policy.FallbackStepRef, merge(ctx, map[string]any{
 				FailureReasonKey: reason,
 				FailedStepKey:    step.ID(),

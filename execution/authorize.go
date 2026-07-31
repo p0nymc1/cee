@@ -21,7 +21,17 @@ type AuthorizerFunc func(ResumeAttempt) (bool, string, error)
 
 func (f AuthorizerFunc) Authorize(a ResumeAttempt) (bool, string, error) { return f(a) }
 
-func (e *Engine) SetAuthorizer(a Authorizer) { e.authorizer = a }
+func (e *Engine) SetAuthorizer(a Authorizer) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.authorizer = a
+}
+
+func (e *Engine) currentAuthorizer() Authorizer {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.authorizer
+}
 
 type NotAuthorized struct {
 	Audience   string
@@ -56,14 +66,15 @@ func (e *Engine) authorize(state State, identity string) error {
 		Reason:     state.Reason,
 	}
 
-	if e.authorizer == nil {
+	authorizer := e.currentAuthorizer()
+	if authorizer == nil {
 		return &NotAuthorized{
 			Audience: state.Audience, Identity: identity, WorkflowID: state.WorkflowID,
 			Reason: "this suspension declares an audience but no Authorizer is configured; call Engine.SetAuthorizer",
 		}
 	}
 
-	ok, reason, err := e.authorizer.Authorize(attempt)
+	ok, reason, err := authorizer.Authorize(attempt)
 	if err != nil {
 
 		return &NotAuthorized{
