@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// Quote is one asset as the market data provider reported it.
 type Quote struct {
 	Asset       string
 	USD         float64
@@ -18,16 +17,10 @@ type Quote struct {
 	QuotedAt    time.Time
 }
 
-// Doer is the slice of http.Client the feed needs, so tests can supply canned
-// responses instead of reaching the network. Same arrangement llmhttp and
-// embedhttp use.
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// Feed reads spot quotes from a CoinGecko-compatible endpoint. Standard
-// library only -- no SDK, so it stays inside the core module's zero-dependency
-// rule.
 type Feed struct {
 	Endpoint string
 	Client   Doer
@@ -38,15 +31,11 @@ const defaultEndpoint = "https://api.coingecko.com/api/v3/simple/price"
 func NewFeed() *Feed {
 	return &Feed{
 		Endpoint: defaultEndpoint,
-		// A surveillance sweep that hangs is worse than one that reports it
-		// could not read the market.
+
 		Client: &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
-// Quotes fetches the named assets. A failure here is reported, never faked:
-// inventing a price would be far worse than saying the market could not be
-// read.
 func (f *Feed) Quotes(assets []string) ([]Quote, error) {
 	q := url.Values{}
 	q.Set("ids", strings.Join(assets, ","))
@@ -78,8 +67,6 @@ func (f *Feed) Quotes(assets []string) ([]Quote, error) {
 		return nil, fmt.Errorf("decoding the quote response: %w", err)
 	}
 
-	// Iterate the requested order rather than the map, so a sweep reports the
-	// same assets in the same order every run.
 	quotes := make([]Quote, 0, len(assets))
 	for _, asset := range assets {
 		v, ok := raw[asset]

@@ -7,11 +7,6 @@ import (
 	"github.com/p0nymc1/cee/entities"
 )
 
-// A fallback step exists to handle a failure, so it is precisely the step
-// that needs to know which failure it is handling. The reason used to be
-// dropped whenever a fallback existed and kept only when one did not, which
-// is backwards.
-
 func TestFallbackStepLearnsWhyTheStepFailed(t *testing.T) {
 	engine := NewEngine(nil)
 	engine.RegisterPolicy(CircuitBreakerPolicy{PolicyID: "hold", FallbackStepRef: "held"})
@@ -53,9 +48,6 @@ func (r *reasonSandbox) Probe(entities.ProbeRequest) (entities.ProbeResult, erro
 	return entities.ProbeResult{Healthy: false, DetectedFailureMode: r.mode}, nil
 }
 
-// The case that motivated this: one fallback step reached by two different
-// probe verdicts must be able to tell them apart. Otherwise a manifest that
-// reports a fixed message there is confidently wrong about one of them.
 func TestTwoProbeVerdictsReachingOneFallbackStayDistinct(t *testing.T) {
 	build := func(mode string) *Engine {
 		engine := NewEngine(&reasonSandbox{mode: mode})
@@ -92,11 +84,10 @@ func TestTwoProbeVerdictsReachingOneFallbackStayDistinct(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Both take the same path to the same fallback...
 	if moved.Output["outcome"] != "held" || missing.Output["outcome"] != "held" {
 		t.Fatalf("expected both to reach the fallback, got %v and %v", moved.Output, missing.Output)
 	}
-	// ...but must not be indistinguishable once there.
+
 	if moved.Output[FailureReasonKey] == missing.Output[FailureReasonKey] {
 		t.Fatalf("two different probe verdicts collapsed into one reason: %v",
 			moved.Output[FailureReasonKey])
@@ -104,14 +95,12 @@ func TestTwoProbeVerdictsReachingOneFallbackStayDistinct(t *testing.T) {
 	if moved.Output[FailureReasonKey] != "row moved from 3 to 7" {
 		t.Fatalf("unexpected reason: %v", moved.Output[FailureReasonKey])
 	}
-	// The gated action must not have run in either case.
+
 	if moved.Output["wrote"] == true || missing.Output["wrote"] == true {
 		t.Fatal("a blocked step must not have executed")
 	}
 }
 
-// The keys are only written when a breaker actually diverts, so a clean run
-// carries no engine bookkeeping in its output.
 func TestSuccessfulRunCarriesNoFailureKeys(t *testing.T) {
 	engine := NewEngine(nil)
 	engine.RegisterWorkflow(&Workflow{
@@ -139,9 +128,6 @@ func TestSuccessfulRunCarriesNoFailureKeys(t *testing.T) {
 	}
 }
 
-// StatePointer answers exactly one question: is this run parked? It used to
-// echo the workflow ref on completion, which made the obvious check wrong for
-// every run that finished normally.
 func TestStatePointerIsEmptyUnlessParked(t *testing.T) {
 	store := NewMemoryStore()
 	engine := NewEngine(nil)

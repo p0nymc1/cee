@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// The example reads its manifest by a repo-relative path, so the test runs
-// from the repo root the way `go run ./examples/human_approval` does.
 func TestMain(m *testing.M) {
 	if err := os.Chdir(filepath.Join("..", "..")); err != nil {
 		panic(err)
@@ -58,11 +56,11 @@ func TestOverThresholdParksThenResumes(t *testing.T) {
 	if resumed.Output["outcome"] != "approved by manager" {
 		t.Fatalf("expected manager approval to land, got %v", resumed.Output)
 	}
-	// Context from before the pause must survive it.
+
 	if resumed.Output["claimant"] != "wei" {
 		t.Fatalf("pre-suspension context was lost, got %v", resumed.Output)
 	}
-	// The trace should read as one run, not two fragments.
+
 	want := []string{"check_threshold", "hold_for_human", "apply_decision", "record_approved"}
 	if len(resumed.Trace) != len(want) {
 		t.Fatalf("expected trace %v, got %v", want, resumed.Trace)
@@ -74,8 +72,6 @@ func TestOverThresholdParksThenResumes(t *testing.T) {
 	}
 }
 
-// A rejection routes through the breaker to the rejection step -- the
-// manager's decision branches without the engine needing an if/else.
 func TestManagerRejectionIsRecorded(t *testing.T) {
 	_, engine, _, err := buildRuntime()
 	if err != nil {

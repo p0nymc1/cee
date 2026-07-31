@@ -1,13 +1,3 @@
-// Command human_approval is a runnable, end-to-end demonstration of a
-// workflow that pauses for a human and is later picked back up.
-//
-// Two things make it worth reading together. First, it is a pure L1 plugin:
-// the whole DAG is the JSON manifest at examples/manifests/expense-approval.json
-// and there is not one Go hook -- every step is a standard action. Second, it
-// exercises suspend/resume, so the "hold this for a person" branch actually
-// has a second half instead of dead-ending at a flag in the output.
-//
-// Run it with `go run ./examples/human_approval`.
 package main
 
 import (
@@ -24,16 +14,12 @@ import (
 
 const manifestPath = "examples/manifests/expense-approval.json"
 
-// buildRuntime wires the shared runtime and loads the domain from its
-// manifest. Both main and the package test go through it, so the demo and
-// its test cannot drift apart.
 func buildRuntime() (*intentrouter.Router, *execution.Engine, *execution.MemoryStore, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("reading %s: %w", manifestPath, err)
 	}
 
-	// No hooks: nil. Every action_ref in this manifest is a standard action.
 	domain, err := manifest.Load(data, nil, stdlib.Default())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("loading manifest: %w", err)
@@ -41,14 +27,9 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, *execution.MemoryS
 
 	router := intentrouter.NewRouter(0.3)
 	engine := execution.NewEngine(nil)
-	// In-memory keeps the demo self-contained: it runs and resumes within
-	// one process and leaves nothing on disk. A real approval queue waits
-	// hours or days, so it would use filestore.New("./state") instead --
-	// that swap is this one line, because the engine only ever knows the
-	// Store interface. See filestore's TestResumeWorksAcrossAnEngineRestart
-	// for a resume that survives the engine being thrown away.
+
 	store := execution.NewMemoryStore()
-	engine.SetStore(store) // without this, a suspending step fails loudly
+	engine.SetStore(store)
 
 	registry.NewRegistry(router, engine).RegisterDomain(*domain)
 	return router, engine, store, nil
@@ -78,7 +59,6 @@ func main() {
 	large, err := engine.Run(match.EntryWorkflowRef, map[string]any{"amount": 4800.0, "claimant": "wei"})
 	report(large, err)
 
-	// What an operator would see while the run is parked.
 	for _, parked := range store.Pending() {
 		fmt.Printf("  pending: %s\n", parked.Reason)
 		fmt.Printf("  context preserved across the pause: claimant=%v amount=%v\n",
@@ -102,7 +82,7 @@ func report(result entities.WorkflowResult, err error) {
 		fmt.Printf("  halted: %v\n", err)
 		return
 	}
-	// A non-empty pointer means exactly one thing: the run is parked.
+
 	if result.StatePointer != "" {
 		fmt.Printf("  suspended, resume pointer issued (%s...)\n", result.StatePointer[:8])
 		fmt.Printf("  trace: %v\n", result.Trace)

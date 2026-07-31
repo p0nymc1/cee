@@ -7,9 +7,6 @@ import (
 	"github.com/p0nymc1/cee/llminjector"
 )
 
-// The recorder must satisfy both observer interfaces. These assignments fail
-// to compile if a method set ever drifts, which is the whole point of
-// keeping them here rather than importing scorecard from those packages.
 var (
 	_ execution.Observer   = (*Recorder)(nil)
 	_ llminjector.Observer = (*Recorder)(nil)
@@ -20,7 +17,7 @@ func TestDeterminismRatio(t *testing.T) {
 	r.ObserveStep("wf", "a")
 	r.ObserveStep("wf", "b")
 	r.ObserveStep("wf", "c")
-	r.ObserveExtraction("schema") // one LLM call among four cognitive ops
+	r.ObserveExtraction("schema")
 
 	s := r.Snapshot("wf")
 	if s.CognitiveOps() != 4 {

@@ -11,11 +11,9 @@ import (
 	"github.com/p0nymc1/cee/llminjector"
 )
 
-// fakeDoer returns a canned chat-completions response and records the request
-// it was given, so we can assert both directions without a network.
 type fakeDoer struct {
 	status      int
-	content     string // the assistant message content
+	content     string
 	lastReqBody string
 	lastAuth    string
 }
@@ -57,9 +55,6 @@ func TestExtractorParsesModelJSON(t *testing.T) {
 	}
 }
 
-// The whole point: a real network extraction still cannot smuggle a decision
-// field past the injector. The model returns is_fraud; the schema does not
-// declare it; the injector drops it.
 func TestDecisionFieldIsStrippedEndToEnd(t *testing.T) {
 	doer := &fakeDoer{status: 200, content: "```json\n{\"amount\": 9000, \"category\": \"electronics\", \"is_fraud\": true}\n```"}
 	inj := llminjector.NewInjector()

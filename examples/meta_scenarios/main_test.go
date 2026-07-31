@@ -8,8 +8,6 @@ import (
 	"github.com/p0nymc1/cee/execution"
 )
 
-// The manifests are read by repo-relative path, as `go run ./examples/...`
-// does.
 func TestMain(m *testing.M) {
 	if err := os.Chdir(filepath.Join("..", "..")); err != nil {
 		panic(err)
@@ -19,7 +17,7 @@ func TestMain(m *testing.M) {
 
 func freshRuntime(t *testing.T) *runtime {
 	t.Helper()
-	// Each test gets its own target state, since the write action mutates it.
+
 	targetVersions = map[string]float64{"row-1": 7, "row-2": 7, "row-3": 7}
 	rt, err := buildRuntime()
 	if err != nil {
@@ -28,7 +26,6 @@ func freshRuntime(t *testing.T) *runtime {
 	return rt
 }
 
-// An N-way switch built from steps that have only two outbound edges each.
 func TestTicketRoutingReachesEveryQueue(t *testing.T) {
 	rt := freshRuntime(t)
 
@@ -51,8 +48,6 @@ func TestTicketRoutingReachesEveryQueue(t *testing.T) {
 	}
 }
 
-// Urgency wins over category: the first test in the chain short-circuits, so
-// the chain's order encodes precedence.
 func TestTicketRoutingOrderEncodesPrecedence(t *testing.T) {
 	rt := freshRuntime(t)
 
@@ -69,8 +64,6 @@ func TestTicketRoutingOrderEncodesPrecedence(t *testing.T) {
 	}
 }
 
-// Scheduling with no clock in the engine: outside the window the run parks,
-// and whatever does own a clock resumes it.
 func TestChangeWindowDefersAndResumes(t *testing.T) {
 	rt := freshRuntime(t)
 
@@ -120,7 +113,6 @@ func TestRecordSyncWritesOnlyTheCleanRecord(t *testing.T) {
 		t.Fatalf("the target should have advanced, got v%v", targetVersions["row-1"])
 	}
 
-	// A stale read must be blocked by the probe, and the target must not move.
 	stale, err := rt.engine.Run("record-sync.push",
 		map[string]any{"record_id": "row-2", "target_version_seen": 3.0})
 	if err != nil {
@@ -134,8 +126,6 @@ func TestRecordSyncWritesOnlyTheCleanRecord(t *testing.T) {
 	}
 }
 
-// The two ways the pre-write check can refuse reach the same fallback step,
-// and must remain tellable apart once there.
 func TestRecordSyncDistinguishesItsTwoRefusals(t *testing.T) {
 	rt := freshRuntime(t)
 
@@ -163,16 +153,14 @@ func TestRecordSyncDistinguishesItsTwoRefusals(t *testing.T) {
 	}
 }
 
-// There is no loop in the DAG; a batch is the caller running the workflow once
-// per record, so one bad record cannot affect another's outcome.
 func TestBatchRecordsAreIndependent(t *testing.T) {
 	rt := freshRuntime(t)
 
 	batch := []map[string]any{
-		{"record_id": "", "target_version_seen": 7.0},      // malformed
-		{"record_id": "row-1", "target_version_seen": 7.0}, // clean, after a failure
-		{"record_id": "row-9", "target_version_seen": 7.0}, // absent
-		{"record_id": "row-3", "target_version_seen": 7.0}, // clean, after another
+		{"record_id": "", "target_version_seen": 7.0},
+		{"record_id": "row-1", "target_version_seen": 7.0},
+		{"record_id": "row-9", "target_version_seen": 7.0},
+		{"record_id": "row-3", "target_version_seen": 7.0},
 	}
 
 	synced := 0

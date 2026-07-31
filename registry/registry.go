@@ -1,8 +1,3 @@
-// Package registry implements the DomainRegistry: how a domain plugin
-// registers itself with the shared runtime. The engine never imports a
-// domain's code directly -- a domain hands the registry its intents,
-// workflows and policies, and everything downstream is addressed by name
-// only.
 package registry
 
 import (
@@ -11,7 +6,6 @@ import (
 	"github.com/p0nymc1/cee/intentrouter"
 )
 
-// Domain is everything one domain plugin contributes to the shared runtime.
 type Domain struct {
 	Name      string
 	Intents   []entities.IntentNode
@@ -19,8 +13,6 @@ type Domain struct {
 	Policies  []execution.CircuitBreakerPolicy
 }
 
-// Registry wires registered domains into a shared Router and Engine. New
-// domains plug in without any change to the Router or Engine themselves.
 type Registry struct {
 	router  *intentrouter.Router
 	engine  *execution.Engine
@@ -36,9 +28,7 @@ func (r *Registry) RegisterDomain(domain Domain) {
 		r.router.RegisterNode(node)
 	}
 	for _, workflow := range domain.Workflows {
-		// The domain name is the single source of truth: stamp it rather
-		// than asking domain authors to repeat it on every workflow, so a
-		// workflow can never disagree with the domain that contributed it.
+
 		workflow.DomainID = domain.Name
 		r.engine.RegisterWorkflow(workflow)
 	}

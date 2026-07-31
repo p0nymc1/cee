@@ -54,10 +54,6 @@ func TestUnregisteredSchemaFails(t *testing.T) {
 	}
 }
 
-// Stripping decision fields stops an extractor from saying what should happen.
-// These cover the other half: a misread fact decides just as hard, so where a
-// value came from has to travel with it.
-
 func TestExtractionLabelsEveryFieldAsModelDerived(t *testing.T) {
 	inj := NewInjector()
 	inj.RegisterSchema("finance.expense_fields",
@@ -70,14 +66,14 @@ func TestExtractionLabelsEveryFieldAsModelDerived(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("unexpected failure: %v", result.ValidationErrors)
 	}
-	// An extractor cannot opt out of being labelled.
+
 	if len(result.ModelDerived) != 2 {
 		t.Fatalf("expected both fields labelled, got %v", result.ModelDerived)
 	}
 	if result.ModelDerived[0] != "amount" || result.ModelDerived[1] != "category" {
 		t.Fatalf("provenance should be sorted for stable replay, got %v", result.ModelDerived)
 	}
-	// The stripped decision field is not labelled, because it does not exist.
+
 	for _, name := range result.ModelDerived {
 		if name == "is_fraud" {
 			t.Fatal("a stripped field must not appear in provenance")
@@ -91,7 +87,6 @@ func TestContextFromCarriesProvenanceAlongsideAuthoritativeFields(t *testing.T) 
 		func(string) (map[string]any, error) { return map[string]any{"amount": 4200.0}, nil })
 	result := inj.Extract(entities.ExtractionRequest{RawText: "x", SchemaRef: "s"})
 
-	// account_id came from our own system; amount was read out of a document.
 	ctx := ContextFrom(map[string]any{"account_id": "acct-1"}, result)
 
 	if ctx["account_id"] != "acct-1" || ctx["amount"] != 4200.0 {
@@ -103,7 +98,6 @@ func TestContextFromCarriesProvenanceAlongsideAuthoritativeFields(t *testing.T) 
 	}
 }
 
-// Two extractions into one context must not lose the first one's provenance.
 func TestContextFromAccumulatesProvenanceAcrossExtractions(t *testing.T) {
 	inj := NewInjector()
 	inj.RegisterSchema("a", Schema{"amount": FieldFloat64},
@@ -120,8 +114,6 @@ func TestContextFromAccumulatesProvenanceAcrossExtractions(t *testing.T) {
 	}
 }
 
-// A context with nothing extracted carries no provenance key at all, so an
-// ordinary workflow is not burdened with engine bookkeeping.
 func TestContextFromAddsNothingWhenNothingWasExtracted(t *testing.T) {
 	ctx := ContextFrom(map[string]any{"account_id": "acct-1"}, entities.ExtractionResult{Success: true})
 	if _, present := ctx[entities.ModelDerivedKey]; present {

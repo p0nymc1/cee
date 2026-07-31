@@ -1,17 +1,3 @@
-// Package llmhttp is a real backend for the edge LLM injector that talks to
-// any OpenAI-compatible chat-completions endpoint (OpenAI, DeepSeek, Qwen, a
-// local vLLM/Ollama server, ...) using only net/http and encoding/json.
-//
-// It is deliberately SDK-free: speaking the HTTP API directly keeps the whole
-// cee module at zero external dependencies, the invariant the rest of the
-// project holds. Point Config.BaseURL at whichever endpoint you run.
-//
-// This is the first component that leaves the in-memory scaffold and does
-// real I/O, yet it changes nothing about the injector's guarantees: whatever
-// the model returns still passes through llminjector.Injector, which strips
-// the payload down to the schema-declared fields. So even if a model tries to
-// return a decision field like "is_fraud", it never reaches the deterministic
-// engine -- the extraction-only red line holds across a real network call.
 package llmhttp
 
 import (
@@ -25,18 +11,15 @@ import (
 	"github.com/p0nymc1/cee/llminjector"
 )
 
-// Doer is the slice of *http.Client the extractor needs. Tests inject a fake
-// so the suite stays hermetic and offline; production passes an *http.Client.
 type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// Config points the extractor at an endpoint.
 type Config struct {
-	BaseURL    string // e.g. https://api.openai.com/v1 or http://localhost:11434/v1
-	Model      string // e.g. gpt-4o-mini, deepseek-chat, qwen-turbo
-	APIKey     string // sent as a Bearer token when non-empty
-	HTTPClient Doer   // defaults to http.DefaultClient
+	BaseURL    string
+	Model      string
+	APIKey     string
+	HTTPClient Doer
 }
 
 type chatMessage struct {
@@ -56,15 +39,6 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
-// Extractor returns an llminjector.Extractor that asks the configured model
-// to pull exactly the named fields out of the input text and return them as a
-// JSON object. Pass the same field names the schema declares.
-// Chat sends one system+user exchange and returns the model's reply with any
-// surrounding code fence removed.
-//
-// Exported because building a workflow from a description (see the draft
-// package) needs the same plumbing as extracting fields from a document: one
-// call, temperature zero, JSON back. Two copies of this would drift.
 func Chat(cfg Config, system, user string) (string, error) {
 	client := cfg.HTTPClient
 	if client == nil {
@@ -74,7 +48,7 @@ func Chat(cfg Config, system, user string) (string, error) {
 
 	reqBody, err := json.Marshal(chatRequest{
 		Model:       cfg.Model,
-		Temperature: 0, // deterministic-as-possible, not creativity
+		Temperature: 0,
 		Messages: []chatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
@@ -117,9 +91,6 @@ func Chat(cfg Config, system, user string) (string, error) {
 	return stripCodeFence(strings.TrimSpace(parsed.Choices[0].Message.Content)), nil
 }
 
-// Extractor returns an llminjector.Extractor that asks the configured model
-// to pull exactly the named fields out of the input text and return them as a
-// JSON object. Pass the same field names the schema declares.
 func Extractor(cfg Config, fields []string) llminjector.Extractor {
 	system := buildSystemPrompt(fields)
 	return func(rawText string) (map[string]any, error) {
@@ -145,15 +116,13 @@ func buildSystemPrompt(fields []string) string {
 	)
 }
 
-// stripCodeFence removes a leading ```json / ``` fence and trailing ``` that
-// chat models often wrap JSON in, so the payload parses cleanly.
 func stripCodeFence(s string) string {
 	if !strings.HasPrefix(s, "```") {
 		return s
 	}
 	s = strings.TrimPrefix(s, "```")
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		// drop an optional language tag on the first fence line (e.g. "json")
+
 		if first := strings.TrimSpace(s[:i]); first == "" || !strings.ContainsAny(first, "{[") {
 			s = s[i+1:]
 		}

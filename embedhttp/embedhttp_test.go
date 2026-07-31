@@ -10,7 +10,6 @@ import (
 	"github.com/p0nymc1/cee/intentrouter"
 )
 
-// Compile-time proof that a *Client is a usable intentrouter.Vectorizer.
 var _ intentrouter.Vectorizer = (*Client)(nil)
 
 type fakeDoer struct {

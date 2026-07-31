@@ -129,13 +129,9 @@ func TestFailureWithPolicyFallsBack(t *testing.T) {
 	}
 }
 
-// The three tests below cover DAG shapes that are structurally broken. Before
-// the ceilings existed, the first hung forever and the second aborted the
-// whole process with an unrecoverable stack overflow.
-
 func TestOnSuccessCycleHitsTheStepLimit(t *testing.T) {
 	engine := NewEngine(nil)
-	engine.SetLimits(50, 0) // small ceiling keeps the test fast
+	engine.SetLimits(50, 0)
 	noop := func(ctx map[string]any) (map[string]any, error) { return map[string]any{}, nil }
 	engine.RegisterWorkflow(&Workflow{
 		WorkflowID:  "cyclic",
@@ -155,7 +151,7 @@ func TestOnSuccessCycleHitsTheStepLimit(t *testing.T) {
 	if limit.WorkflowID != "cyclic" || limit.Limit != 50 {
 		t.Fatalf("unexpected limit detail: %+v", limit)
 	}
-	// The tail of the trace is what tells an author where the cycle is.
+
 	if len(limit.RecentSteps) == 0 {
 		t.Fatalf("expected RecentSteps to point at the cycle, got none")
 	}
@@ -207,8 +203,6 @@ func TestRunawayIsNotSwallowedByACircuitBreaker(t *testing.T) {
 
 	result, err := engine.Run("recursive", map[string]any{})
 
-	// A breaker absorbs business failures, not broken DAG shapes: the
-	// fallback must not run and the defect must reach the caller.
 	var limit *DepthLimitExceeded
 	if !errors.As(err, &limit) {
 		t.Fatalf("expected the depth limit to bypass the breaker, got %v", err)

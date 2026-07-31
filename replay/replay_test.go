@@ -13,9 +13,6 @@ import (
 	"github.com/p0nymc1/cee/replay"
 )
 
-// A refund desk: pay out under the limit, hold above it, and never pay an
-// account the probe says is closed. Threshold and probe are both injectable so
-// a test can change the rule, or change the world, and replay against it.
 func desk(limit float64, accountOpen bool) (*execution.Engine, execution.Prober) {
 	sandbox := proberFunc(func(req entities.ProbeRequest) (entities.ProbeResult, error) {
 		if accountOpen {
@@ -60,7 +57,6 @@ type proberFunc func(entities.ProbeRequest) (entities.ProbeResult, error)
 
 func (f proberFunc) Probe(r entities.ProbeRequest) (entities.ProbeResult, error) { return f(r) }
 
-// record runs once through a Recorder and returns the recording.
 func record(t *testing.T, limit float64, accountOpen bool, input map[string]any) replay.Recording {
 	t.Helper()
 	_, sandbox := desk(limit, accountOpen)
@@ -101,8 +97,6 @@ func workflowFor(limit float64) *execution.Workflow {
 	}
 }
 
-// replayAgainst re-runs a recording against a workflow built with a possibly
-// different rule, answering probes from the record rather than the world.
 func replayAgainst(rec replay.Recording, limit float64) (entities.WorkflowResult, error, []string) {
 	player := replay.NewPlayer(rec)
 	engine := execution.NewEngine(player)
@@ -113,7 +107,6 @@ func replayAgainst(rec replay.Recording, limit float64) (entities.WorkflowResult
 	return result, err, player.Unmatched()
 }
 
-// The determinism claim, cashed: same recording, same rule, nothing moved.
 func TestReplayingAnUnchangedRuleShowsNoDifference(t *testing.T) {
 	rec := record(t, 100, true, map[string]any{"account": "acct-1", "amount": 20.0})
 
@@ -126,17 +119,13 @@ func TestReplayingAnUnchangedRuleShowsNoDifference(t *testing.T) {
 	}
 }
 
-// The reason this package exists: change a threshold, replay history, and read
-// off exactly which decisions flip. Nothing about the recorded run changes --
-// only the rule.
 func TestLoweringAThresholdFlipsARecordedDecision(t *testing.T) {
-	// $80 was paid out under a $100 limit.
+
 	rec := record(t, 100, true, map[string]any{"account": "acct-1", "amount": 80.0})
 	if rec.Output["paid"] != true {
 		t.Fatalf("precondition: the original run should have paid, got %v", rec.Output)
 	}
 
-	// Tighten the limit to $50 and ask what that would have done.
 	result, err, _ := replayAgainst(rec, 50)
 	diffs := replay.Compare(rec, result, err)
 	if len(diffs) == 0 {
@@ -163,8 +152,6 @@ func TestLoweringAThresholdFlipsARecordedDecision(t *testing.T) {
 	}
 }
 
-// Raising the threshold should leave a payout that was already under it alone.
-// A regression report that flags unaffected cases is noise.
 func TestRaisingAThresholdLeavesUnaffectedDecisionsAlone(t *testing.T) {
 	rec := record(t, 100, true, map[string]any{"account": "acct-1", "amount": 20.0})
 
@@ -174,10 +161,8 @@ func TestRaisingAThresholdLeavesUnaffectedDecisionsAlone(t *testing.T) {
 	}
 }
 
-// The probe read the world at record time. The world has since moved, and the
-// replay must still reproduce the original run rather than consult it again.
 func TestProbeVerdictsAreReplayedNotReread(t *testing.T) {
-	// Recorded while the account was closed: the payout was held.
+
 	rec := record(t, 100, false, map[string]any{"account": "acct-1", "amount": 20.0})
 	if rec.Output["paid"] != false {
 		t.Fatalf("precondition: a closed account should not have paid, got %v", rec.Output)
@@ -186,7 +171,6 @@ func TestProbeVerdictsAreReplayedNotReread(t *testing.T) {
 		t.Fatalf("expected one unhealthy verdict on the record, got %+v", rec.Probes)
 	}
 
-	// The account has since been reopened. Replaying must not notice.
 	result, err, _ := replayAgainst(rec, 100)
 	if diffs := replay.Compare(rec, result, err); len(diffs) != 0 {
 		t.Fatalf("replay consulted the world instead of the record: %v", diffs)
@@ -196,9 +180,6 @@ func TestProbeVerdictsAreReplayedNotReread(t *testing.T) {
 	}
 }
 
-// A recording is JSON so it can be filed next to the incident it belongs to.
-// After a round trip every number is a float64, which must not read as a
-// difference.
 func TestRecordingSurvivesJSONRoundTrip(t *testing.T) {
 	rec := record(t, 100, true, map[string]any{"account": "acct-1", "amount": 20.0})
 
@@ -217,10 +198,8 @@ func TestRecordingSurvivesJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// Failures are the runs most worth replaying, so a recording of one has to be
-// as complete as a recording of a success.
 func TestAFailedRunIsReplayable(t *testing.T) {
-	// No fallback policy, so exceeding the limit trips the breaker outright.
+
 	sandbox := proberFunc(func(entities.ProbeRequest) (entities.ProbeResult, error) {
 		return entities.ProbeResult{Healthy: true}, nil
 	})
@@ -249,7 +228,6 @@ func TestAFailedRunIsReplayable(t *testing.T) {
 		t.Fatalf("the failure should be on the record, got %+v", recording)
 	}
 
-	// Same rule, replayed: the same failure, and no spurious differences.
 	player := replay.NewPlayer(recording)
 	engine2 := execution.NewEngine(player)
 	engine2.RegisterWorkflow(&execution.Workflow{
@@ -271,9 +249,6 @@ func TestAFailedRunIsReplayable(t *testing.T) {
 	}
 }
 
-// An action that consults something other than its context is exactly what the
-// L2 contract forbids, and the engine cannot see it. A replay can: the run
-// diverges even though the rule and the recorded verdicts are unchanged.
 func TestNondeterministicActionShowsUpAsDivergence(t *testing.T) {
 	calls := 0
 	build := func() *execution.Workflow {
@@ -292,7 +267,7 @@ func TestNondeterministicActionShowsUpAsDivergence(t *testing.T) {
 		}
 	}
 
-	rec := replay.NewRecorder(nil) // no probes in this workflow
+	rec := replay.NewRecorder(nil)
 	engine := execution.NewEngine(rec)
 	engine.RegisterWorkflow(build())
 	result, err := engine.Run("flaky", map[string]any{})
@@ -311,9 +286,6 @@ func TestNondeterministicActionShowsUpAsDivergence(t *testing.T) {
 	}
 }
 
-// Refusing beats guessing: a probe the recording never captured cannot be
-// reconstructed, and answering "healthy" would let a replay execute something
-// the original never did.
 func TestUnrecordedProbeIsRefusedAndReported(t *testing.T) {
 	player := replay.NewPlayer(replay.Recording{WorkflowID: "w"})
 
@@ -332,8 +304,6 @@ func TestUnrecordedProbeIsRefusedAndReported(t *testing.T) {
 	}
 }
 
-// When a replay is deliberately exploring new ground, a fallback can answer
-// what the recording does not hold.
 func TestFallbackAnswersProbesTheRecordingLacks(t *testing.T) {
 	player := replay.NewPlayer(replay.Recording{WorkflowID: "w"})
 	player.Fallback = proberFunc(func(entities.ProbeRequest) (entities.ProbeResult, error) {
@@ -349,18 +319,10 @@ func TestFallbackAnswersProbesTheRecordingLacks(t *testing.T) {
 	}
 }
 
-// A run that used a model was only half reproducible before: the engine's
-// probes were on the record, and the extraction was not, so a replay called
-// the model again and could diverge for a reason unrelated to the rule under
-// test.
-
 func extractorReturning(payload map[string]any) llminjector.Extractor {
 	return func(string) (map[string]any, error) { return payload, nil }
 }
 
-// The one that carries the argument: the model changes its answer, and the
-// replay does not notice, because it is replaying what happened rather than
-// asking again.
 func TestReplayUsesTheRecordedExtractionNotTheModel(t *testing.T) {
 	inj := llminjector.NewInjector()
 	rec := replay.NewRecorder(nil)
@@ -378,7 +340,6 @@ func TestReplayUsesTheRecordedExtractionNotTheModel(t *testing.T) {
 		t.Fatalf("the extraction should be on the record, got %+v", recording.Extractions)
 	}
 
-	// The model now reads the same document as $99. A replay must not care.
 	player := replay.NewPlayer(recording)
 	replayInj := llminjector.NewInjector()
 	replayInj.RegisterSchema("finance.expense", llminjector.Schema{"amount": llminjector.FieldFloat64},
@@ -390,14 +351,11 @@ func TestReplayUsesTheRecordedExtractionNotTheModel(t *testing.T) {
 	}
 }
 
-// Reproducing a run means reproducing what happened. A successful extraction
-// where the original failed would send the replay down a path the original
-// never took.
 func TestARecordedExtractionFailureReplaysAsAFailure(t *testing.T) {
 	inj := llminjector.NewInjector()
 	rec := replay.NewRecorder(nil)
 	inj.SetObserver(rec)
-	// The schema wants an amount; the model returns nothing usable.
+
 	inj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
 		extractorReturning(map[string]any{"merchant": "acme"}))
 
@@ -409,7 +367,7 @@ func TestARecordedExtractionFailureReplaysAsAFailure(t *testing.T) {
 
 	player := replay.NewPlayer(recording)
 	replayInj := llminjector.NewInjector()
-	// A model that would now succeed must not rescue the replay.
+
 	replayInj.RegisterSchema("s", llminjector.Schema{"amount": llminjector.FieldFloat64},
 		player.ExtractorFor("s"))
 
@@ -428,17 +386,12 @@ func TestProvenanceIsKeptOnTheRecord(t *testing.T) {
 	inj.Extract(entities.ExtractionRequest{SchemaRef: "s"})
 	recording := rec.Finish("w", nil, entities.WorkflowResult{}, nil)
 
-	// Which fields a model produced is part of what happened, and a replayed
-	// run has to reach the same verified-input gates as the original.
 	got := recording.Extractions[0].ModelDerived
 	if len(got) != 1 || got[0] != "amount" {
 		t.Fatalf("provenance should survive into the recording, got %v", got)
 	}
 }
 
-// A replay that asks for an extraction the recording never captured has gone
-// somewhere the original did not, and is told so rather than quietly calling
-// a model.
 func TestUnrecordedExtractionIsRefusedAndReported(t *testing.T) {
 	player := replay.NewPlayer(replay.Recording{WorkflowID: "w"})
 
@@ -451,7 +404,6 @@ func TestUnrecordedExtractionIsRefusedAndReported(t *testing.T) {
 	}
 }
 
-// Both halves of a run land in one recording, so the file is the whole story.
 func TestOneRecordingCoversProbesAndExtractionsTogether(t *testing.T) {
 	rec := replay.NewRecorder(proberFunc(func(entities.ProbeRequest) (entities.ProbeResult, error) {
 		return entities.ProbeResult{Healthy: true}, nil

@@ -9,8 +9,6 @@ import (
 	"github.com/p0nymc1/cee/execution"
 )
 
-// fakeRunner stands in for the docker CLI so the suite is hermetic and needs
-// no container runtime.
 type fakeRunner struct {
 	exit     int
 	output   string
@@ -72,17 +70,13 @@ func TestMissingCommandIsUnhealthy(t *testing.T) {
 func TestJSONStyleCommandIsAccepted(t *testing.T) {
 	runner := &fakeRunner{exit: 0}
 	sb := &Sandbox{Image: "alpine", Runner: runner}
-	// A manifest-set context arrives as []any, not []string.
+
 	res, _ := sb.Probe(entities.ProbeRequest{StepContext: map[string]any{"probe_command": []any{"echo", "hi"}}})
 	if !res.Healthy {
 		t.Fatalf("expected healthy for a JSON-style []any command")
 	}
 }
 
-// The whole point of a satellite: it drops into the real engine through the
-// existing execution.Prober interface, with no change to the core. A healthy
-// probe lets the step run; an unhealthy one gates it through the circuit
-// breaker exactly as the in-process sandbox would.
 func TestSatellitePlugsIntoTheEngineUnchanged(t *testing.T) {
 	build := func(runner CommandRunner) *execution.Engine {
 		engine := execution.NewEngine(&Sandbox{Image: "alpine", Runner: runner})
@@ -110,13 +104,11 @@ func TestSatellitePlugsIntoTheEngineUnchanged(t *testing.T) {
 		return engine
 	}
 
-	// Rehearsal passes -> the real action runs.
 	ok, err := build(&fakeRunner{exit: 0}).Run("deploy", map[string]any{"probe_command": []string{"true"}})
 	if err != nil || ok.Output["applied"] != true {
 		t.Fatalf("expected applied=true after a healthy rehearsal, got %+v err=%v", ok.Output, err)
 	}
 
-	// Rehearsal fails -> the step is gated, breaker routes to held.
 	bad, err := build(&fakeRunner{exit: 1, output: "syntax error"}).Run("deploy", map[string]any{"probe_command": []string{"false"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

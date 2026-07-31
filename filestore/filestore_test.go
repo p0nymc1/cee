@@ -56,15 +56,13 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-// The whole point of this Store: a second process, or the same process after
-// a restart, must find the parked run.
 func TestStateSurvivesANewStoreOverTheSameDirectory(t *testing.T) {
 	store, dir := newStore(t)
 	if err := store.Save(sampleState("abc123")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	restarted, err := New(dir) // stands in for a process restart
+	restarted, err := New(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,8 +75,6 @@ func TestStateSurvivesANewStoreOverTheSameDirectory(t *testing.T) {
 	}
 }
 
-// End to end against the real engine: park a run, throw the engine away,
-// build a new one over the same directory, and resume there.
 func TestResumeWorksAcrossAnEngineRestart(t *testing.T) {
 	_, dir := newStore(t)
 
@@ -120,7 +116,6 @@ func TestResumeWorksAcrossAnEngineRestart(t *testing.T) {
 		t.Fatal("expected a resume pointer")
 	}
 
-	// Everything above is now gone; only the directory remains.
 	after, err := New(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -153,8 +148,7 @@ func TestDeleteConsumesThePointer(t *testing.T) {
 	if _, err := store.Load("abc123"); err == nil {
 		t.Fatal("expected the pointer to be gone")
 	}
-	// A double delete must be reported, not silently tolerated: the engine
-	// relies on Delete to guarantee an approval cannot be replayed.
+
 	if err := store.Delete("abc123"); err == nil {
 		t.Fatal("expected deleting a consumed pointer to fail")
 	}
@@ -167,9 +161,6 @@ func TestLoadUnknownPointerFails(t *testing.T) {
 	}
 }
 
-// A pointer arrives from outside -- a CLI argument, an HTTP parameter -- and
-// is used as a filename, so it must not be able to address anything outside
-// the store's directory.
 func TestPointerCannotEscapeTheDirectory(t *testing.T) {
 	store, dir := newStore(t)
 
@@ -199,7 +190,6 @@ func TestPointerCannotEscapeTheDirectory(t *testing.T) {
 		}
 	}
 
-	// The bystander file must still be there and untouched.
 	if data, err := os.ReadFile(secret); err != nil || string(data) != "not yours" {
 		t.Fatalf("a neighbouring file was disturbed: %v %q", err, data)
 	}
@@ -214,7 +204,6 @@ func TestPendingListsParkedRuns(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// One corrupt file must not hide the healthy ones from an operator.
 	if err := os.WriteFile(filepath.Join(dir, "ccc"), []byte("{not json"), 0o600); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,12 +237,10 @@ func TestCorruptStateIsReportedNotGuessedAt(t *testing.T) {
 	}
 }
 
-// Documented behaviour, pinned so it cannot change unnoticed: JSON decodes
-// every number as float64, so an int in context is a float64 after a resume.
 func TestNumbersComeBackAsFloat64(t *testing.T) {
 	store, _ := newStore(t)
 	state := sampleState("abc123")
-	state.Ctx = map[string]any{"count": 42} // an int going in
+	state.Ctx = map[string]any{"count": 42}
 
 	if err := store.Save(state); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -283,7 +270,6 @@ func TestSavedFilesAreOwnerOnly(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Parked state holds business context, so it must not be world-readable.
 	info, err := os.Stat(filepath.Join(dir, "abc123"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -293,9 +279,6 @@ func TestSavedFilesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-// The single-use guarantee under concurrency. A load-then-delete pair would
-// let several racers all read the state before any of them removed it, and
-// every one of them would apply the same human decision. Exactly one may win.
 func TestConcurrentConsumeHasExactlyOneWinner(t *testing.T) {
 	store, _ := newStore(t)
 	if err := store.Save(sampleState("abc123")); err != nil {
@@ -314,7 +297,7 @@ func TestConcurrentConsumeHasExactlyOneWinner(t *testing.T) {
 	for i := 0; i < racers; i++ {
 		go func() {
 			defer done.Done()
-			start.Wait() // release everyone at once
+			start.Wait()
 			state, err := store.Consume("abc123")
 			mu.Lock()
 			defer mu.Unlock()
@@ -340,8 +323,6 @@ func TestConcurrentConsumeHasExactlyOneWinner(t *testing.T) {
 	}
 }
 
-// The engine-level version of the same guarantee: many Resume calls on one
-// pointer must apply the decision exactly once.
 func TestConcurrentResumeAppliesTheDecisionOnce(t *testing.T) {
 	_, dir := newStore(t)
 	store, err := New(dir)
@@ -366,7 +347,7 @@ func TestConcurrentResumeAppliesTheDecisionOnce(t *testing.T) {
 			"act": &execution.LeafStep{
 				StepID: "act",
 				Run: func(ctx map[string]any) (map[string]any, error) {
-					atomic.AddInt64(&applied, 1) // the irreversible action
+					atomic.AddInt64(&applied, 1)
 					return map[string]any{"done": true}, nil
 				},
 			},
@@ -398,10 +379,6 @@ func TestConcurrentResumeAppliesTheDecisionOnce(t *testing.T) {
 	}
 }
 
-// A claim is held until the run finishes. These cover the gap that motivated
-// it: before, Consume discarded the state immediately, so a process dying
-// mid-resume took the parked run with it and left no trace.
-
 func TestClaimIsHeldUntilReleased(t *testing.T) {
 	store, dir := newStore(t)
 	if err := store.Save(sampleState("abc123")); err != nil {
@@ -412,7 +389,6 @@ func TestClaimIsHeldUntilReleased(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Claimed, so it must not look parked any more...
 	pending, err := store.Pending()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -420,7 +396,7 @@ func TestClaimIsHeldUntilReleased(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("a claimed run must not still read as pending, got %d", len(pending))
 	}
-	// ...but the state must still be on disk, not discarded.
+
 	claims, _ := filepath.Glob(filepath.Join(dir, "*.claimed"))
 	if len(claims) != 1 {
 		t.Fatalf("expected the claim to be held on disk, found %d", len(claims))
@@ -435,8 +411,6 @@ func TestClaimIsHeldUntilReleased(t *testing.T) {
 	}
 }
 
-// Releasing something never claimed is tidy-up, not an error: the engine
-// releases on every path out of a resume.
 func TestReleaseOfAnUnclaimedPointerIsNotAnError(t *testing.T) {
 	store, _ := newStore(t)
 	if err := store.Release("neverclaimed"); err != nil {
@@ -444,7 +418,6 @@ func TestReleaseOfAnUnclaimedPointerIsNotAnError(t *testing.T) {
 	}
 }
 
-// The signature of a process that died mid-resume.
 func TestOrphanedReportsAClaimNeverReleased(t *testing.T) {
 	store, _ := newStore(t)
 	if err := store.Save(sampleState("abc123")); err != nil {
@@ -453,9 +426,7 @@ func TestOrphanedReportsAClaimNeverReleased(t *testing.T) {
 	if _, err := store.Consume("abc123"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// The process dies here: no Release follows.
 
-	// Not yet old enough to count.
 	fresh, err := store.Orphaned(time.Hour)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -474,7 +445,7 @@ func TestOrphanedReportsAClaimNeverReleased(t *testing.T) {
 	if orphans[0].Pointer != "abc123" {
 		t.Fatalf("the orphan must name its pointer, got %q", orphans[0].Pointer)
 	}
-	// An operator needs to know what it was waiting on to decide anything.
+
 	if orphans[0].State.Reason != "awaiting manager decision" {
 		t.Fatalf("the orphan must carry its reason, got %q", orphans[0].State.Reason)
 	}
@@ -504,8 +475,6 @@ func TestReleasedRunIsNotAnOrphan(t *testing.T) {
 	}
 }
 
-// End to end: the engine releases on its own, so a normal resume leaves
-// nothing behind, and an orphan really does mean something went wrong.
 func TestEngineReleasesAfterAResume(t *testing.T) {
 	_, dir := newStore(t)
 	store, err := New(dir)

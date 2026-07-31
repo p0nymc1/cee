@@ -7,9 +7,6 @@ import (
 	"github.com/p0nymc1/cee/execution"
 )
 
-// The README shows this integration. These tests are what stop it becoming a
-// snippet that no longer does what the prose around it claims.
-
 func entry(t *testing.T) (*execution.Engine, string) {
 	t.Helper()
 	router, engine := buildRuntime()
@@ -27,8 +24,6 @@ func TestSmallRefundSettlesItself(t *testing.T) {
 	}
 }
 
-// Waiting for a manager is a suspension, not a failure: the breaker must not
-// see it, so the run stays resumable rather than being diverted to "hold".
 func TestLargeRefundParksInsteadOfFailing(t *testing.T) {
 	engine, ref := entry(t)
 	got := handle(engine, ref, "acct-100", 500)
@@ -48,9 +43,6 @@ func TestParkedRefundResumesToPayment(t *testing.T) {
 		t.Fatal("expected a resume pointer")
 	}
 
-	// The step after the suspension point is "hold", which records paid=false
-	// -- so a manager's approval has to be acted on by the caller. What the
-	// engine guarantees is that the run survives the wait and is resumable.
 	resumed, err := engine.Resume(parked.StatePointer, map[string]any{"approved": true})
 	if err != nil {
 		t.Fatalf("resuming should succeed: %v", err)
@@ -60,7 +52,6 @@ func TestParkedRefundResumesToPayment(t *testing.T) {
 	}
 }
 
-// The case the probe exists for: the payout must not run at all.
 func TestClosedAccountIsCaughtBeforeAnyMoneyMoves(t *testing.T) {
 	engine, ref := entry(t)
 
@@ -77,8 +68,6 @@ func TestClosedAccountIsCaughtBeforeAnyMoneyMoves(t *testing.T) {
 	}
 }
 
-// A closed account is refused whatever the amount -- the probe gates the step
-// before the amount is even looked at.
 func TestClosedAccountIsRefusedRegardlessOfAmount(t *testing.T) {
 	engine, ref := entry(t)
 	for _, amount := range []float64{1, 20, 500, 100000} {

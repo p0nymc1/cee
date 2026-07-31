@@ -1,9 +1,5 @@
 package registry
 
-// This test is CEE's "Phase 0" stress test in miniature: two domains that
-// share no vocabulary or code register into the same Router and Engine, and
-// neither the router nor the engine needs to change to support either one.
-
 import (
 	"testing"
 
@@ -104,8 +100,6 @@ func TestRegisterDomainStampsWorkflowsWithTheirDomain(t *testing.T) {
 	reg := NewRegistry(intentrouter.NewRouter(0.5), execution.NewEngine(nil))
 	reg.RegisterDomain(Domain{Name: "security", Workflows: []*execution.Workflow{workflow}})
 
-	// The domain author never wrote DomainID: registering is what binds a
-	// workflow to its domain, so the two can never disagree.
 	if workflow.DomainID != "security" {
 		t.Fatalf("expected registration to stamp DomainID=security, got %q", workflow.DomainID)
 	}

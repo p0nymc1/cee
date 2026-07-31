@@ -1,14 +1,3 @@
-// Command cee is the CEE command-line tool for authoring and distributing
-// domain plugins:
-//
-//	cee validate <manifest.json>     statically check one manifest
-//	cee lint [catalog_dir]           check a whole catalog's integrity (CI gate)
-//	cee list [catalog_dir]           list the plugins in a catalog
-//	cee install <name> [catalog_dir] fetch a plugin manifest into ./plugins
-//
-// validate and lint turn the normative handbook's red lines into automated
-// gates, so a contributor never has to wait on a human reviewer to know a
-// plugin is well-formed.
 package main
 
 import (
@@ -200,7 +189,7 @@ func runBench(args []string) int {
 			return 1
 		}
 		if !ok {
-			continue // no benchmark fixture: skip, not an error
+			continue
 		}
 		suite, err := bench.ParseSuite(benchData)
 		if err != nil {
@@ -228,11 +217,6 @@ func runBench(args []string) int {
 	return 0
 }
 
-// runDraft turns a description into a workflow the engine could run.
-//
-// It prints to stdout and saves nothing. A drafted workflow is a proposal: the
-// point of moving the model to design time is that a person reads the plan
-// before it can execute, and writing the file here would quietly skip that.
 func runDraft(args []string) int {
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		fmt.Fprintln(os.Stderr, `usage: cee draft "<description of the process>"`)
@@ -258,8 +242,7 @@ func runDraft(args []string) int {
 	result, err := draft.Draft(cfg, args[0], stdlib.Default())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cee draft: %v\n", err)
-		// The rejected attempts are the useful artifact when a description
-		// turns out to be too vague to express as a workflow.
+
 		for i, attempt := range result.Attempts {
 			if len(attempt.Manifest) > 0 {
 				fmt.Fprintf(os.Stderr, "\n--- attempt %d ---\n%s\n", i+1, draft.Pretty(attempt.Manifest))
@@ -274,13 +257,6 @@ func runDraft(args []string) int {
 	return 0
 }
 
-// runServe starts a throwaway server for one manifest.
-//
-// Deliberately limited. It has no authentication and an in-memory store, which
-// is fine for poking a freshly drafted workflow with curl and wrong for
-// anything else -- so it refuses to listen anywhere but loopback rather than
-// letting a trial quietly become an unauthenticated execution endpoint on a
-// network.
 func runServe(args []string) int {
 	if len(args) < 1 || len(args) > 2 {
 		fmt.Fprintln(os.Stderr, "usage: cee serve <manifest.json> [addr]")
@@ -303,8 +279,7 @@ func runServe(args []string) int {
 		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
 		return 2
 	}
-	// No Go hooks are available from a CLI, so only a pure L1 manifest can be
-	// served. Load says so plainly if the manifest needs more.
+
 	domain, err := manifest.Load(data, nil, stdlib.Default())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cee serve: %v\n", err)
@@ -319,7 +294,7 @@ func runServe(args []string) int {
 
 	handler, err := httpapi.New(httpapi.Config{
 		Engine: engine,
-		// Explicit, not accidental: see the loopback check above.
+
 		AllowAnonymous: true,
 		Pending:        httpapi.MemoryPending{Store: store},
 	})
@@ -347,7 +322,6 @@ func runServe(args []string) int {
 	return 0
 }
 
-// isLoopback reports whether addr binds only to the local machine.
 func isLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

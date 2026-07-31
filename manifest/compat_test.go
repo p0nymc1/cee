@@ -8,13 +8,6 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// entry_step_ref was the original name for the field that names an intent's
-// target workflow. The name was wrong -- the value is a workflow_id, never a
-// step_id -- and it is now entry_workflow_ref. Rule 3 of the normative
-// handbook forbids removing a published JSON field, and manifests in the
-// catalog already use the old one, so it keeps working and is reported as
-// deprecated. These tests hold that bargain in place.
-
 func compatManifest(entryField string) string {
 	return `{
 		"name": "compat",
@@ -37,7 +30,7 @@ func TestDeprecatedEntryStepRefStillLoads(t *testing.T) {
 	if len(domain.Intents) != 1 {
 		t.Fatalf("expected one intent, got %d", len(domain.Intents))
 	}
-	// The old name always meant the entry workflow; only the name was wrong.
+
 	if got := domain.Intents[0].EntryWorkflowRef; got != "compat.wf" {
 		t.Fatalf("expected the deprecated field to resolve to compat.wf, got %q", got)
 	}
@@ -46,7 +39,6 @@ func TestDeprecatedEntryStepRefStillLoads(t *testing.T) {
 func TestDeprecatedEntryStepRefIsValidButWarns(t *testing.T) {
 	report := Validate([]byte(compatManifest(`"entry_step_ref": "compat.wf"`)), stdlib.Default())
 
-	// Deprecated, not broken: it must still pass.
 	if !report.OK() {
 		t.Fatalf("a deprecated field must not fail validation, got:\n%s", report.String())
 	}
@@ -70,8 +62,6 @@ func TestCurrentEntryWorkflowRefWarnsAboutNothing(t *testing.T) {
 	}
 }
 
-// Setting both to the same value is redundant but unambiguous, so it is
-// allowed -- it is what a careful author does mid-migration.
 func TestBothNamesAgreeingIsAccepted(t *testing.T) {
 	both := `"entry_workflow_ref": "compat.wf", "entry_step_ref": "compat.wf"`
 
@@ -83,8 +73,6 @@ func TestBothNamesAgreeingIsAccepted(t *testing.T) {
 	}
 }
 
-// Disagreeing is the one case that cannot be resolved without guessing which
-// the author meant, and guessing is exactly what the handbook rules out.
 func TestBothNamesDisagreeingIsRejected(t *testing.T) {
 	both := `"entry_workflow_ref": "compat.wf", "entry_step_ref": "compat.other"`
 
@@ -112,8 +100,6 @@ func TestMissingBothNamesIsAnError(t *testing.T) {
 	}
 }
 
-// A dangling compensation is worse than none at all: the workflow believes the
-// step is reversible and only discovers otherwise while it is abandoning a run.
 func TestValidateCatchesADanglingCompensation(t *testing.T) {
 	bad := `{
 		"name": "broken",

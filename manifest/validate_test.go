@@ -10,11 +10,6 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// A complete no-code plugin: every action is a standard-library action,
-// there are zero Go hooks. This is the L1 contribution tier -- a manifest a
-// non-Go author could publish. amount <= threshold passes through to
-// "approve"; otherwise the require step fails and the breaker routes to
-// "flag".
 const noCodeManifestJSON = `
 {
   "name": "expense-guard",
@@ -93,10 +88,6 @@ func TestValidateCatchesDanglingOnSuccess(t *testing.T) {
 	}
 }
 
-// The next four cover the DAG shapes that used to be found only at runtime,
-// where an on_success cycle hung Engine.Run and a sub_workflow_ref cycle
-// killed the process with an unrecoverable stack overflow.
-
 func TestValidateCatchesOnSuccessCycle(t *testing.T) {
 	bad := `{
 		"name": "broken",
@@ -137,8 +128,6 @@ func TestValidateCatchesSubWorkflowCycle(t *testing.T) {
 	}
 }
 
-// A loop that only closes through a breaker fallback needs repeated failure
-// to spin, so it is reported but must not fail the manifest.
 func TestValidateWarnsButDoesNotFailOnFallbackLoop(t *testing.T) {
 	loop := `{
 		"name": "loopy",

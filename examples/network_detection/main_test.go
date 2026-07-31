@@ -54,9 +54,6 @@ func TestOrdinaryHostIsContainedAutomatically(t *testing.T) {
 	}
 }
 
-// The case automated response actually gets wrong in the field: the detector
-// is right about the attack and the response would still take the company off
-// the internet.
 func TestBlockingOurOwnEgressIsRefused(t *testing.T) {
 	out, trace, matched := runAlert(t, alert{
 		summary: "password spray against the vpn gateway", confidence: 0.97,
@@ -71,7 +68,7 @@ func TestBlockingOurOwnEgressIsRefused(t *testing.T) {
 	if trace[len(trace)-1] != "hold_for_analyst" {
 		t.Fatalf("expected the analyst path, got %v", trace)
 	}
-	// The analyst has to be told what the probe saw, or the hold is useless.
+
 	why, _ := out[execution.FailureReasonKey].(string)
 	if !strings.Contains(why, "900 remote workers") {
 		t.Fatalf("the refusal must explain the blast radius, got %q", why)
@@ -110,8 +107,6 @@ func TestIsolatingCriticalInfrastructureIsRefused(t *testing.T) {
 	}
 }
 
-// An asset nobody can identify is not safe to act on either: the probe cannot
-// bound a blast radius it knows nothing about.
 func TestIsolatingAnUnknownHostIsRefused(t *testing.T) {
 	out, _, matched := runAlert(t, alert{
 		summary: "lateral movement over rdp", confidence: 0.95,
@@ -129,8 +124,6 @@ func TestIsolatingAnUnknownHostIsRefused(t *testing.T) {
 	}
 }
 
-// A confident detector is a precondition for acting, checked before the SOP is
-// even selected -- so a weak signal costs nothing and touches nothing.
 func TestLowConfidenceNeverReachesContainment(t *testing.T) {
 	out, trace, matched := runAlert(t, alert{
 		summary: "beaconing to an unclassified external host", confidence: 0.42,
@@ -145,7 +138,7 @@ func TestLowConfidenceNeverReachesContainment(t *testing.T) {
 	if trace[len(trace)-1] != "queue_for_review" {
 		t.Fatalf("expected the review queue, got %v", trace)
 	}
-	// It must stop at the gate, before a response is even chosen.
+
 	for _, step := range trace {
 		if step == "select_response" || step == "contain" {
 			t.Fatalf("a weak signal must not get as far as %q: %v", step, trace)
@@ -153,8 +146,6 @@ func TestLowConfidenceNeverReachesContainment(t *testing.T) {
 	}
 }
 
-// Not everything on a network is an intrusion. An unmatched alert is reported
-// as unmatched rather than forced into the nearest technique.
 func TestUnrelatedAlertMatchesNothing(t *testing.T) {
 	_, _, matched := runAlert(t, alert{
 		summary: "printer firmware update failed twice", confidence: 0.99,
@@ -165,8 +156,6 @@ func TestUnrelatedAlertMatchesNothing(t *testing.T) {
 	}
 }
 
-// Every technique the router can match must have a containment SOP, or the
-// workflow fails at select_response on a real alert.
 func TestEveryMatchableTechniqueHasAnSOP(t *testing.T) {
 	router, _, err := buildRuntime()
 	if err != nil {
@@ -183,8 +172,6 @@ func TestEveryMatchableTechniqueHasAnSOP(t *testing.T) {
 	}
 }
 
-// The feed exists to demonstrate; if a path stops being covered the demo
-// quietly stops proving that path works.
 func TestFeedCoversEveryDisposition(t *testing.T) {
 	seen := map[string]bool{}
 	for _, a := range feed() {

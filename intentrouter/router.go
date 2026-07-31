@@ -1,9 +1,3 @@
-// Package intentrouter implements CEE's intent routing layer. Out of the box
-// it matches free text against each domain's registered IntentNodes using
-// token-overlap similarity -- lightweight and dependency-free. Attach a
-// Vectorizer with SetVectorizer to upgrade to real semantic matching (e.g.
-// embeddings from embedhttp) without changing the Router API: RegisterNode
-// and Match keep the same shapes, only the scoring behind them changes.
 package intentrouter
 
 import (
@@ -39,25 +33,17 @@ func jaccard(a, b map[string]struct{}) float64 {
 	return float64(intersection) / float64(union)
 }
 
-// Vectorizer turns text into an embedding. A real implementation (see
-// embedhttp) calls an embeddings endpoint; matching becomes cosine
-// similarity over these vectors, so "unusual sign-in location" can match
-// "suspicious login" despite sharing no tokens.
 type Vectorizer interface {
 	Vectorize(text string) ([]float64, error)
 }
 
-// Router matches free text to a domain's registered intents. Domains never
-// see each other's candidates: matching is always scoped to one DomainID,
-// so two unrelated domains can register similarly-worded intents without
-// interfering with each other.
 type Router struct {
 	threshold  float64
-	nodes      map[string][]entities.IntentNode // domainID -> nodes
+	nodes      map[string][]entities.IntentNode
 	vectorizer Vectorizer
 
 	mu    sync.Mutex
-	cache map[string][]float64 // example/query text -> embedding (populated lazily)
+	cache map[string][]float64
 }
 
 func NewRouter(threshold float64) *Router {
@@ -68,9 +54,6 @@ func NewRouter(threshold float64) *Router {
 	}
 }
 
-// SetVectorizer switches the router from token-overlap to embedding-based
-// semantic matching. Passing nil (the default) keeps the lexical scaffold.
-// Example embeddings are computed lazily on first Match and cached.
 func (r *Router) SetVectorizer(v Vectorizer) {
 	r.vectorizer = v
 }
@@ -79,14 +62,6 @@ func (r *Router) RegisterNode(node entities.IntentNode) {
 	r.nodes[node.DomainID] = append(r.nodes[node.DomainID], node)
 }
 
-// Match returns the best-scoring intent within domainID, if any clears the
-// router's threshold. An unmatched result is reported explicitly rather
-// than guessed -- callers should fall through to the edge LLM injector.
-//
-// With a Vectorizer attached, scoring is cosine similarity over embeddings;
-// if any embedding call fails, Match degrades to lexical scoring for that
-// call rather than erroring, so a flaky embeddings endpoint never takes the
-// router down (the signature has no error to return by design).
 func (r *Router) Match(domainID, rawText string) entities.MatchResult {
 	if r.vectorizer != nil {
 		if result, ok := r.matchSemantic(domainID, rawText); ok {
@@ -115,8 +90,6 @@ func (r *Router) matchLexical(domainID, rawText string) entities.MatchResult {
 	return r.result(bestNode, bestScore)
 }
 
-// matchSemantic returns (result, true) on success, or (_, false) to signal
-// the caller should fall back to lexical (an embedding call failed).
 func (r *Router) matchSemantic(domainID, rawText string) (entities.MatchResult, bool) {
 	queryVec, err := r.vectorFor(rawText)
 	if err != nil {
@@ -155,8 +128,6 @@ func (r *Router) result(bestNode *entities.IntentNode, bestScore float64) entiti
 	return entities.MatchResult{Matched: false, Confidence: bestScore}
 }
 
-// vectorFor returns text's embedding, caching it. Example vectors are stable
-// across calls; query vectors get cached too, which helps repeated queries.
 func (r *Router) vectorFor(text string) ([]float64, error) {
 	r.mu.Lock()
 	if v, ok := r.cache[text]; ok {

@@ -58,10 +58,10 @@ func TestRuleCheckComputesBoolean(t *testing.T) {
 
 func TestComparisonRejectsBadParams(t *testing.T) {
 	cases := []map[string]any{
-		{"op": "lte", "value": 1.0},                 // missing field
-		{"field": "x", "value": 1.0},                // missing op
-		{"field": "x", "op": "bogus", "value": 1.0}, // invalid op
-		{"field": "x", "op": "lte"},                 // missing value
+		{"op": "lte", "value": 1.0},
+		{"field": "x", "value": 1.0},
+		{"field": "x", "op": "bogus", "value": 1.0},
+		{"field": "x", "op": "lte"},
 	}
 	for i, params := range cases {
 		if _, err := Default()["std.require"](params); err == nil {
@@ -124,7 +124,6 @@ func TestRequireVerifiedRejectsMalformedParams(t *testing.T) {
 	}
 }
 
-// The gate a consequential step puts in front of itself.
 func TestRequireVerifiedRefusesModelDerivedValues(t *testing.T) {
 	action, err := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
 	if err != nil {
@@ -146,7 +145,6 @@ func TestRequireVerifiedRefusesModelDerivedValues(t *testing.T) {
 func TestRequireVerifiedPassesAuthoritativeValues(t *testing.T) {
 	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
 
-	// amount came from our own ledger; only merchant was extracted.
 	if _, err := action(map[string]any{
 		"amount":                 50000.0,
 		"merchant":               "acme",
@@ -156,8 +154,6 @@ func TestRequireVerifiedPassesAuthoritativeValues(t *testing.T) {
 	}
 }
 
-// A context that never went near an extractor has no provenance at all, and
-// must not be treated as suspect.
 func TestRequireVerifiedPassesWhenNothingWasExtracted(t *testing.T) {
 	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
 	if _, err := action(map[string]any{"amount": 50000.0}); err != nil {
@@ -165,8 +161,6 @@ func TestRequireVerifiedPassesWhenNothingWasExtracted(t *testing.T) {
 	}
 }
 
-// Provenance survives a suspended run being written to disk and read back,
-// where a []string becomes a []any.
 func TestRequireVerifiedSurvivesAJSONRoundTrip(t *testing.T) {
 	action, _ := Default()["std.require_verified"](map[string]any{"fields": []any{"amount"}})
 	if _, err := action(map[string]any{
@@ -195,7 +189,6 @@ func TestSuspendCarriesAnOptionalAudience(t *testing.T) {
 	}
 }
 
-// Omitting it keeps the old behaviour: anyone holding the pointer may resume.
 func TestSuspendWithoutAudienceStaysOpen(t *testing.T) {
 	action, _ := Default()["std.suspend"](map[string]any{"reason": "waiting"})
 	_, err := action(map[string]any{})

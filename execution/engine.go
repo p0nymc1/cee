@@ -1,9 +1,3 @@
-// Package execution implements the Deterministic Execution Engine (DEE): the
-// DAG walker at CEE's core. Steps are either atomic (LeafStep) or a
-// reference to a nested workflow (CompositeStep). Every leaf step optionally
-// gates on a sandbox probe before it runs, and optionally declares a circuit
-// breaker policy to consult if the probe or the action itself fails --
-// there is no blind retry, and no LLM anywhere in this loop.
 package execution
 
 import (
@@ -13,17 +7,10 @@ import (
 	"github.com/p0nymc1/cee/entities"
 )
 
-// CircuitBreakerTripped is returned when a step fails and no fallback policy
-// is registered for it.
 type CircuitBreakerTripped struct {
 	StepID string
 	Reason string
 
-	// Compensated lists the steps whose effects were successfully undone once
-	// this run was abandoned, and CompensationFailures the ones that could
-	// not be. A non-empty CompensationFailures is the worst outcome the engine
-	// can report: an action happened and reversing it also failed, so the
-	// world is in a state nobody chose and only a person can resolve it.
 	Compensated          []string
 	CompensationFailures []CompensationFailure
 }
@@ -33,20 +20,11 @@ func (e *CircuitBreakerTripped) Error() string {
 		e.StepID, e.Reason, compensationSummary(e.Compensated, e.CompensationFailures))
 }
 
-// Default ceilings on a single Run. They exist to make a malformed DAG fail
-// as a reportable error rather than as a hang or a process kill: an
-// on_success cycle would otherwise spin forever, and a sub_workflow_ref
-// cycle would otherwise recurse until the Go runtime aborts with a stack
-// overflow, which cannot be recovered. Both are set well above any
-// legitimate workflow -- a DAG walk normally visits each step at most once.
 const (
 	DefaultMaxSteps = 10_000
 	DefaultMaxDepth = 64
 )
 
-// StepLimitExceeded is returned when one workflow executes more steps than
-// the engine's ceiling allows -- in practice, an on_success cycle.
-// RecentSteps holds the tail of the trace, which is where the cycle is.
 type StepLimitExceeded struct {
 	WorkflowID  string
 	Limit       int
@@ -60,8 +38,6 @@ func (e *StepLimitExceeded) Error() string {
 	)
 }
 
-// DepthLimitExceeded is returned when CompositeStep nesting goes deeper than
-// the engine's ceiling -- in practice, a sub_workflow_ref cycle.
 type DepthLimitExceeded struct {
 	WorkflowID string
 	Limit      int
@@ -74,19 +50,13 @@ func (e *DepthLimitExceeded) Error() string {
 	)
 }
 
-// Step is the shape every node in a workflow's step map satisfies. It is
-// deliberately only implemented by LeafStep and CompositeStep in this
-// package -- a workflow's DAG is one of exactly these two step kinds.
 type Step interface {
 	ID() string
 	circuitBreakerPolicyRef() string
 }
 
-// Action performs a leaf step's deterministic work: context in, partial
-// context out.
 type Action func(ctx map[string]any) (map[string]any, error)
 
-// LeafStep is an atomic, deterministic unit of work.
 type LeafStep struct {
 	StepID                  string
 	Run                     Action
@@ -94,18 +64,12 @@ type LeafStep struct {
 	CircuitBreakerPolicyRef string
 	OnSuccess               string
 
-	// CompensateStepRef names a step in the same workflow that undoes this
-	// one. When a run is abandoned, completed steps that declare a
-	// compensation are unwound in reverse order. A step that declares none is
-	// simply reported as not undoable, which is honest rather than silent.
 	CompensateStepRef string
 }
 
 func (s *LeafStep) ID() string                      { return s.StepID }
 func (s *LeafStep) circuitBreakerPolicyRef() string { return s.CircuitBreakerPolicyRef }
 
-// CompositeStep points at a named sub-workflow, letting DAGs nest and reuse
-// common sub-flows instead of flattening every step to one grain.
 type CompositeStep struct {
 	StepID                  string
 	SubWorkflowRef          string
@@ -116,19 +80,11 @@ type CompositeStep struct {
 func (s *CompositeStep) ID() string                      { return s.StepID }
 func (s *CompositeStep) circuitBreakerPolicyRef() string { return s.CircuitBreakerPolicyRef }
 
-// CircuitBreakerPolicy is a named fallback. Steps declare a policy by
-// reference rather than inlining retry/fallback literals, so every safety
-// net in the system stays auditable from one registry.
 type CircuitBreakerPolicy struct {
 	PolicyID        string
 	FallbackStepRef string
 }
 
-// Workflow is a Step DAG plus its entry point. DomainID names the domain
-// that contributed it and is passed through to sandbox probes so a prober
-// can scope itself per domain; registry.RegisterDomain stamps it from the
-// domain's own name, so a workflow registered directly on the Engine (as in
-// tests) simply carries no domain.
 type Workflow struct {
 	WorkflowID  string
 	DomainID    string
@@ -136,25 +92,16 @@ type Workflow struct {
 	Steps       map[string]Step
 }
 
-// Prober is the interface the engine expects from a pre-execution sandbox.
 type Prober interface {
 	Probe(entities.ProbeRequest) (entities.ProbeResult, error)
 }
 
-// Observer receives one callback per engine event so a scorecard recorder
-// can measure a run without the engine depending on any metrics package.
-// Every leaf step the engine executes is, by construction, a deterministic
-// operation -- that is exactly the quantity a scorecard needs to prove how
-// many LLM calls a naive per-step agent would have made and CEE did not.
 type Observer interface {
 	ObserveStep(workflowID, stepID string)
 	ObserveSandboxProbe(workflowID, stepID string)
 	ObserveCircuitBreaker(workflowID, stepID string)
 }
 
-// Engine walks a registered Workflow's Step DAG to completion. Sandbox
-// probing and circuit-breaking are the only two ways a step's forward
-// progress can be redirected.
 type Engine struct {
 	sandbox    Prober
 	observer   Observer
@@ -166,15 +113,10 @@ type Engine struct {
 	maxDepth   int
 }
 
-// SetStore attaches the Store that suspended runs are parked in. Without
-// one, a step that suspends fails loudly rather than silently behaving like
-// an ordinary failure. Use NewMemoryStore for development.
 func (e *Engine) SetStore(s Store) {
 	e.store = s
 }
 
-// NewEngine builds an Engine. sandbox may be nil as long as no registered
-// step ever declares a SandboxProbeRef.
 func NewEngine(sandbox Prober) *Engine {
 	return &Engine{
 		sandbox:   sandbox,
@@ -185,9 +127,6 @@ func NewEngine(sandbox Prober) *Engine {
 	}
 }
 
-// SetLimits overrides the runaway ceilings. A non-positive value leaves that
-// ceiling at its default -- the ceilings cannot be switched off, because an
-// unbounded walk is a process-level hazard rather than a workflow-level one.
 func (e *Engine) SetLimits(maxSteps, maxDepth int) {
 	if maxSteps > 0 {
 		e.maxSteps = maxSteps
@@ -197,8 +136,6 @@ func (e *Engine) SetLimits(maxSteps, maxDepth int) {
 	}
 }
 
-// SetObserver attaches an Observer for metrics collection. Passing nil (the
-// default) disables observation with zero overhead.
 func (e *Engine) SetObserver(o Observer) {
 	e.observer = o
 }
@@ -211,21 +148,14 @@ func (e *Engine) RegisterPolicy(p CircuitBreakerPolicy) {
 	e.policies[p.PolicyID] = p
 }
 
-// Run walks workflowRef's Step DAG starting from its entry step, threading
-// context through each step's output.
 func (e *Engine) Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error) {
 	return e.run(workflowRef, ctx, 0)
 }
 
-// run is Run plus the current sub-workflow nesting depth. Steps are counted
-// per workflow, depth across them.
 func (e *Engine) run(workflowRef string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
 	return e.runFrom(workflowRef, "", ctx, depth)
 }
 
-// runFrom walks a workflow starting at startStepID, or at the workflow's
-// declared entry step when startStepID is empty. Resume uses the explicit
-// form to re-enter a DAG partway through.
 func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, depth int) (entities.WorkflowResult, error) {
 	if depth > e.maxDepth {
 		return entities.WorkflowResult{}, &DepthLimitExceeded{WorkflowID: workflowRef, Limit: e.maxDepth}
@@ -241,8 +171,6 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 		stepID = workflow.EntryStepID
 	}
 
-	// Steps that ran to completion and know how to undo themselves, in
-	// execution order, so an abandoned run can be unwound in reverse.
 	var done []completed
 	var trace []string
 	steps := 0
@@ -267,11 +195,7 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 		case *CompositeStep:
 			subResult, err := e.run(s.SubWorkflowRef, ctx, depth+1)
 			if err != nil {
-				// A runaway or misconfigured sub-workflow is a defect in the
-				// DAG's shape, not a business failure the breaker exists to
-				// absorb. Letting a fallback swallow it would hide the bug
-				// and let the outer loop re-enter the same broken
-				// sub-workflow, so it goes straight up instead.
+
 				if bypassesBreaker(err) {
 					return entities.WorkflowResult{}, err
 				}
@@ -321,9 +245,7 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 			e.observe(func(o Observer) { o.ObserveStep(workflow.WorkflowID, s.StepID) })
 			output, err := s.Run(ctx)
 			if err != nil {
-				// A suspension is a pause, not a fault: it must reach the
-				// caller with a resume pointer rather than be absorbed by a
-				// breaker as though the step had failed.
+
 				var suspended *Suspended
 				if errors.As(err, &suspended) {
 					return e.suspend(workflow, s.StepID, suspended, ctx, trace, depth)
@@ -348,20 +270,9 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 		}
 	}
 
-	// A run that reached the end has nothing to resume, so it carries no
-	// pointer. StatePointer used to echo workflowRef here, from before
-	// suspension existed, which left the field meaning two different things
-	// -- a resume token when parked, an identifier when finished -- and made
-	// the obvious "did this park?" test silently wrong for every completed
-	// run.
 	return entities.WorkflowResult{Output: ctx, Trace: trace}, nil
 }
 
-// suspend parks a run: it saves the context at the suspension point and
-// reports the pointer to resume from. The returned WorkflowResult carries
-// the context accumulated so far, so a caller can act on partial output
-// (for instance, tell an operator what is awaiting their decision) without
-// loading the state back.
 func (e *Engine) suspend(
 	workflow *Workflow, stepID string, s *Suspended,
 	ctx map[string]any, trace []string, depth int,
@@ -400,25 +311,10 @@ func (e *Engine) suspend(
 	return entities.WorkflowResult{Output: ctx, StatePointer: pointer, Trace: trace}, nil
 }
 
-// Resume continues a suspended run from the pointer Run reported. resolution
-// carries whatever the external event decided (an approval, a callback
-// payload) and is merged into the saved context, so the step after the
-// suspension point can branch on it like any other context field.
-//
-// Execution restarts at the suspended step's OnSuccess: waiting is over, so
-// the suspension point itself does not run again. A pointer is single-use --
-// it is deleted once resumed, so the same decision cannot be replayed.
 func (e *Engine) Resume(pointer string, resolution map[string]any) (entities.WorkflowResult, error) {
 	return e.ResumeAs(pointer, "", resolution)
 }
 
-// ResumeAs is Resume carrying the identity of whoever is answering.
-//
-// The engine does not authenticate the identity -- proving it belongs to the
-// service in front of the engine, and treating an unverified string as proof
-// here would be worse than not asking at all. What the engine guarantees is
-// that a suspension declaring an audience is not resumed without the domain's
-// Authorizer agreeing, and that whoever answered is recorded in the run.
 func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (entities.WorkflowResult, error) {
 	if e.store == nil {
 		return entities.WorkflowResult{}, fmt.Errorf("no Store is configured; call Engine.SetStore first")
@@ -444,36 +340,21 @@ func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (
 			"suspended step %q is no longer a leaf step", state.StepID)
 	}
 
-	// Rule on the caller before the pointer is claimed. A refusal must leave
-	// the approval pending for whoever may actually give it -- consuming it
-	// here would let anyone holding a link destroy a pending decision simply
-	// by being unauthorised.
 	if err := e.authorize(state, identity); err != nil {
 		return entities.WorkflowResult{}, err
 	}
 
-	// Claim the pointer before running. This is one atomic step rather than
-	// a load-then-delete pair, so when several processes resume the same
-	// pointer at once exactly one gets past here -- the losers see the
-	// pointer already gone rather than applying the same decision again.
-	// The validation above deliberately used a non-claiming Load, so a run
-	// that turns out to be unresumable is reported without being destroyed.
 	claimed, err := e.store.Consume(pointer)
 	if err != nil {
 		return entities.WorkflowResult{}, fmt.Errorf("could not claim resume pointer: %w", err)
 	}
 
-	// A decision needs an author in the record, not just an outcome.
 	resumeCtx := merge(claimed.Ctx, resolution)
 	if identity != "" {
 		resumeCtx[ResumedByKey] = identity
 	}
 	result, err := e.runFrom(claimed.WorkflowID, leaf.OnSuccess, resumeCtx, 0)
 
-	// Release on every path out, success or failure alike: either way the
-	// decision has been acted on, and a claim left behind would later read as
-	// a run that never finished. Only a process that dies in runFrom skips
-	// this -- which is exactly the case the held claim exists to record.
 	if releaseErr := e.store.Release(pointer); releaseErr != nil && err == nil {
 		return result, fmt.Errorf("run finished but its claim could not be released: %w", releaseErr)
 	}
@@ -482,35 +363,18 @@ func (e *Engine) ResumeAs(pointer, identity string, resolution map[string]any) (
 	return result, err
 }
 
-// observe invokes fn with the attached observer, if any. Keeping the nil
-// check in one place lets the Run loop stay readable.
 func (e *Engine) observe(fn func(Observer)) {
 	if e.observer != nil {
 		fn(e.observer)
 	}
 }
 
-// Context keys the engine writes when a breaker diverts to a fallback. They
-// are namespaced because they are the one case where the engine puts its own
-// content into a domain's context, and a domain field must never collide with
-// them by accident.
 const (
-	// FailureReasonKey holds why the diverted step failed -- an action's
-	// error text, or a probe's DetectedFailureMode.
 	FailureReasonKey = "cee.failure_reason"
-	// FailedStepKey holds the step ID that failed.
+
 	FailedStepKey = "cee.failed_step"
 )
 
-// onFailure decides where a failed step goes and, when it goes to a fallback,
-// tells that fallback what happened.
-//
-// Without this the reason was dropped on the fallback path and only survived
-// when there was no fallback at all -- which inverted the need, since a step
-// that exists to handle failure is exactly the one that has to know which
-// failure it is handling. Two different probe verdicts would otherwise land
-// in the same fallback indistinguishably, and a manifest that reported a
-// fixed message there would be confidently wrong about one of them.
 func (e *Engine) onFailure(step Step, reason string, ctx map[string]any) (string, map[string]any, error) {
 	if ref := step.circuitBreakerPolicyRef(); ref != "" {
 		if policy, ok := e.policies[ref]; ok && policy.FallbackStepRef != "" {
@@ -523,10 +387,6 @@ func (e *Engine) onFailure(step Step, reason string, ctx map[string]any) (string
 	return "", ctx, &CircuitBreakerTripped{StepID: step.ID(), Reason: reason}
 }
 
-// bypassesBreaker reports whether err describes a defect in how the
-// workflow is built rather than a business action that failed. A circuit
-// breaker exists to absorb the latter; absorbing the former would convert a
-// misconfiguration into a silent fallback and hide it from the author.
 func bypassesBreaker(err error) bool {
 	var stepLimit *StepLimitExceeded
 	var depthLimit *DepthLimitExceeded
@@ -538,7 +398,6 @@ func bypassesBreaker(err error) bool {
 		errors.As(err, &noStore)
 }
 
-// tail returns at most the last n elements of s.
 func tail(s []string, n int) []string {
 	if len(s) <= n {
 		return s

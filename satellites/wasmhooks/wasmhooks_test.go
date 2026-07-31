@@ -14,19 +14,15 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// fakeRuntime stands in for a real WASM runtime (e.g. wazero). It honors the
-// same contract -- JSON in, JSON out, and nothing else -- by running a Go
-// function that plays the part of the compiled module, so the suite is
-// hermetic and needs no wasm toolchain.
 type fakeRuntime struct {
 	module func(in map[string]any) map[string]any
 	err    error
-	block  bool // simulate a runaway module that never returns on its own
+	block  bool
 }
 
 func (f *fakeRuntime) Call(ctx context.Context, module []byte, inputJSON []byte) ([]byte, error) {
 	if f.block {
-		<-ctx.Done() // only unblocks when the caller's timeout fires
+		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 	if f.err != nil {
@@ -39,12 +35,11 @@ func (f *fakeRuntime) Call(ctx context.Context, module []byte, inputJSON []byte)
 	return json.Marshal(f.module(in))
 }
 
-// Compile-time proof a Hook is a core execution.Action.
 var _ execution.Action = Hook(&fakeRuntime{module: func(map[string]any) map[string]any { return nil }}, nil)
 
 func TestHookRunsModuleAcrossTheBoundary(t *testing.T) {
 	rt := &fakeRuntime{module: func(in map[string]any) map[string]any {
-		// "untrusted" logic: double the amount it was handed.
+
 		return map[string]any{"doubled": in["amount"].(float64) * 2}
 	}}
 	action := Hook(rt, []byte("pretend-wasm-bytes"))
@@ -66,8 +61,7 @@ func TestModuleErrorBecomesStepError(t *testing.T) {
 }
 
 func TestInvalidModuleOutputIsRejected(t *testing.T) {
-	// A module that returns non-JSON must not corrupt the step; wrap it so the
-	// runtime yields bytes that are not a JSON object.
+
 	rt := runtimeReturning([]byte("not json"))
 	if _, err := Hook(rt, nil)(map[string]any{}); err == nil {
 		t.Fatalf("expected invalid module output to be rejected")
@@ -85,8 +79,6 @@ func TestTimeoutStopsARunawayModule(t *testing.T) {
 	}
 }
 
-// The payoff: an untrusted WASM module backs a real manifest step and runs
-// through the unchanged engine, registered like any other Hook.
 func TestUntrustedModuleBacksAManifestStep(t *testing.T) {
 	rt := &fakeRuntime{module: func(in map[string]any) map[string]any {
 		return map[string]any{"score": in["amount"].(float64) + 1}
@@ -120,7 +112,6 @@ func TestUntrustedModuleBacksAManifestStep(t *testing.T) {
 	}
 }
 
-// runtimeReturning is a Runtime that always yields the given bytes.
 func runtimeReturning(b []byte) Runtime {
 	return &staticRuntime{out: b}
 }

@@ -2,9 +2,6 @@ package main
 
 import "testing"
 
-// TestOrdinaryHostIsAutoContained proves the deterministic happy path: a
-// matched technique against a non-critical asset runs classify -> contain
-// with no human in the loop.
 func TestOrdinaryHostIsAutoContained(t *testing.T) {
 	router, engine := buildRuntime()
 
@@ -22,10 +19,6 @@ func TestOrdinaryHostIsAutoContained(t *testing.T) {
 	}
 }
 
-// TestCriticalAssetIsHeldForHumanApproval proves the containment-specific
-// breaker semantics: the same technique against a domain controller is
-// stopped by the sandbox gate and downgraded to human approval, never
-// auto-executed.
 func TestCriticalAssetIsHeldForHumanApproval(t *testing.T) {
 	router, engine := buildRuntime()
 

@@ -19,9 +19,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// Live quotes are what the demo screens, but a test that depends on today's
-// market proves nothing and fails for reasons unrelated to the code. Every
-// case below is a fixed quote.
 func verdict(t *testing.T, q Quote, age time.Duration) map[string]any {
 	t.Helper()
 	router, engine, err := buildRuntime()
@@ -66,8 +63,6 @@ func TestQuietMarketIsNotFlagged(t *testing.T) {
 	}
 }
 
-// The guardrail that matters: the rule fired correctly and the data still is
-// not worth acting on.
 func TestMaterialMoveOnAThinBookIsHeld(t *testing.T) {
 	out := verdict(t, Quote{Asset: "chainlink", USD: 8.35, ChangePct24: -9.1, Volume24: 40e6}, time.Minute)
 	if out["disposition"] != heldDisposition {
@@ -93,9 +88,6 @@ func TestStaleQuoteIsHeld(t *testing.T) {
 	}
 }
 
-// A stablecoin is screened against its peg, not against volatility: the same
-// percentage means something different for an asset that should be worth
-// exactly one dollar.
 func TestStablecoinDepegIsFlagged(t *testing.T) {
 	out := verdict(t, Quote{Asset: "tether", USD: 0.972, ChangePct24: -2.8, Volume24: 40e9}, time.Minute)
 	if out["disposition"] != "flagged for review" {
@@ -114,8 +106,6 @@ func TestStablecoinHoldingItsPegIsQuiet(t *testing.T) {
 	}
 }
 
-// A stablecoin that barely moves in percentage terms can still be badly off
-// peg; screening it as volatility would miss exactly the case that matters.
 func TestDepegIsCaughtEvenWhenTheDailyMoveIsSmall(t *testing.T) {
 	out := verdict(t, Quote{Asset: "tether", USD: 0.988, ChangePct24: -1.1, Volume24: 40e9}, time.Minute)
 	if out["disposition"] != "flagged for review" {
@@ -154,8 +144,7 @@ func TestFeedParsesQuotesInRequestedOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Order follows the request, not the JSON object, so a sweep reads the
-	// same way every run.
+
 	if len(quotes) != 2 || quotes[0].Asset != "bitcoin" || quotes[1].Asset != "ethereum" {
 		t.Fatalf("expected bitcoin then ethereum, got %+v", quotes)
 	}
@@ -180,8 +169,7 @@ func TestFeedSkipsAssetsTheProviderDidNotReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Missing is missing. Inventing a zero-priced asset would hand the rules a
-	// fabricated 100% depeg.
+
 	if len(quotes) != 1 || quotes[0].Asset != "bitcoin" {
 		t.Fatalf("expected only the asset that was returned, got %+v", quotes)
 	}

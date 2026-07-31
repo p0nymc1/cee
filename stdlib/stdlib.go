@@ -1,14 +1,3 @@
-// Package stdlib is CEE's standard action library: a set of generic,
-// business-agnostic, deterministic actions that a manifest can reference by
-// name and configure with pure JSON -- no Go required from the plugin
-// author. This is what makes the L1 "no-code" contribution tier real: a
-// contributor who cannot write Go can still publish a runnable domain
-// plugin by composing these actions in a manifest.
-//
-// Every standard action is a Factory: it takes the manifest step's "with"
-// parameters, validates them once at load time, and returns a bound
-// execution.Action. Factories never call an LLM and never carry hidden
-// state -- they are the deterministic vocabulary the engine runs.
 package stdlib
 
 import (
@@ -19,17 +8,10 @@ import (
 	"github.com/p0nymc1/cee/execution"
 )
 
-// Factory builds a bound action from a step's declared parameters. It
-// validates params eagerly and returns an error if they are malformed, so a
-// misconfigured manifest fails at load time, not mid-run.
 type Factory func(params map[string]any) (execution.Action, error)
 
-// Library maps a standard action name to its factory.
 type Library map[string]Factory
 
-// Default returns the built-in standard action library. The names are
-// conventionally prefixed "std." so they never collide with a domain's own
-// custom hook names.
 func Default() Library {
 	return Library{
 		"std.set":              setFactory,
@@ -40,28 +22,12 @@ func Default() Library {
 	}
 }
 
-// suspendFactory parks the run pending something outside the engine -- a
-// human decision, a callback, a scheduled window. The engine saves the
-// context and returns a resume pointer; whatever the external event decides
-// is merged into context on resume, so the step after this one can branch on
-// it with std.require like any other field. This is what lets a no-code
-// manifest express "hold this for a human" without writing Go.
-//
-//	{"action_ref": "std.suspend", "with": {"reason": "awaiting human approval"},
-//	 "on_success": "apply_decision"}
-//
-// An optional "audience" names who may answer it, enforced by the domain's
-// execution.Authorizer:
-//
-//	{"action_ref": "std.suspend",
-//	 "with": {"reason": "over the limit", "audience": "finance-manager"}}
 func suspendFactory(params map[string]any) (execution.Action, error) {
 	reason, ok := params["reason"].(string)
 	if !ok || reason == "" {
 		return nil, fmt.Errorf("std.suspend requires a non-empty 'reason' string")
 	}
-	// audience is optional. When set, only identities the domain's Authorizer
-	// accepts may resume -- without it, anyone holding the pointer can.
+
 	audience, _ := params["audience"].(string)
 
 	return func(ctx map[string]any) (map[string]any, error) {
@@ -72,10 +38,6 @@ func suspendFactory(params map[string]any) (execution.Action, error) {
 	}, nil
 }
 
-// setFactory writes a fixed set of fields into the step's output. Use it for
-// terminal/marker steps such as {"flagged": true} or {"contained": true}.
-//
-//	{"action_ref": "std.set", "with": {"fields": {"flagged": true}}}
 func setFactory(params map[string]any) (execution.Action, error) {
 	raw, ok := params["fields"]
 	if !ok {
@@ -98,16 +60,6 @@ func setFactory(params map[string]any) (execution.Action, error) {
 	}, nil
 }
 
-// requireFactory is the deterministic gate. It compares a context field
-// against a value; if the requirement holds the step passes (and the engine
-// continues to on_success), otherwise the step FAILS -- which routes through
-// the step's circuit_breaker_policy_ref to a fallback step. This is how a
-// no-code manifest expresses branching without the engine needing an
-// if/else primitive: "require amount <= threshold; on failure the breaker
-// sends us to the alert step".
-//
-//	{"action_ref": "std.require", "with": {"field": "amount", "op": "lte", "value": 10000},
-//	 "circuit_breaker_policy_ref": "route_to_alert"}
 func requireFactory(params map[string]any) (execution.Action, error) {
 	field, op, want, err := comparisonParams("std.require", params)
 	if err != nil {
@@ -125,13 +77,6 @@ func requireFactory(params map[string]any) (execution.Action, error) {
 	}, nil
 }
 
-// ruleCheckFactory computes a boolean classification into result_field
-// without ever failing. Unlike std.require it does not affect control flow;
-// it annotates the result. This is a deterministic rule-engine primitive,
-// not an LLM decision -- it is allowed to produce a judgement field because
-// the judgement is code, fully reproducible and auditable.
-//
-//	{"action_ref": "std.rule_check", "with": {"field": "amount", "op": "gt", "value": 10000, "result_field": "is_high_value"}}
 func ruleCheckFactory(params map[string]any) (execution.Action, error) {
 	field, op, want, err := comparisonParams("std.rule_check", params)
 	if err != nil {
@@ -150,8 +95,6 @@ func ruleCheckFactory(params map[string]any) (execution.Action, error) {
 	}, nil
 }
 
-// comparisonParams pulls the shared {field, op, value} triple used by
-// require and rule_check.
 func comparisonParams(action string, params map[string]any) (field, op string, want any, err error) {
 	field, ok := params["field"].(string)
 	if !ok || field == "" {
@@ -234,26 +177,6 @@ func toFloat(v any) (float64, error) {
 	}
 }
 
-// requireVerifiedFactory refuses to let a step run on values a model guessed.
-//
-// Stripping decision fields stops an extractor from saying what should happen.
-// It does nothing about a misread fact: an extractor that reads $50,000 as
-// $5,000 has decided nothing and has still decided everything, because the
-// rules downstream will confidently approve. This is the gate a consequential
-// step puts in front of itself -- pay out, isolate a host, disable an account
-// -- to say that those particular values must be known rather than guessed.
-//
-// Failing routes through the step's circuit breaker like any other failure, so
-// the usual answer is a fallback that puts it in front of a human.
-//
-//	{"action_ref": "std.require_verified", "with": {"fields": ["amount", "account"]},
-//	 "circuit_breaker_policy_ref": "needs_human_check"}
-//
-// There is deliberately no companion action that marks a field verified.
-// Anything that could stamp "verified" from inside a manifest would be a
-// laundering tool: extract a number, mark it checked, act on it. Promoting a
-// value is a Go hook's job, and only after it has been corroborated against a
-// system of record or a person -- see the normative handbook.
 func requireVerifiedFactory(params map[string]any) (execution.Action, error) {
 	raw, ok := params["fields"]
 	if !ok {
@@ -292,8 +215,6 @@ func requireVerifiedFactory(params map[string]any) (execution.Action, error) {
 	}, nil
 }
 
-// provenanceOf reads the model-derived list, tolerating the []any shape it
-// takes after a JSON round trip through a suspended run's Store.
 func provenanceOf(ctx map[string]any) []string {
 	switch v := ctx[entities.ModelDerivedKey].(type) {
 	case []string:

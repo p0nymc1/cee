@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// A resume pointer is unguessable, which stops someone finding one. It does
-// nothing about someone who legitimately has one -- a forwarded email, a link
-// in a chat, a log line. These cover the difference.
-
 func approvalEngine(t *testing.T, audience string) (*Engine, *MemoryStore) {
 	t.Helper()
 	store := NewMemoryStore()
@@ -40,7 +36,6 @@ func approvalEngine(t *testing.T, audience string) (*Engine, *MemoryStore) {
 	return engine, store
 }
 
-// A workflow that names no audience keeps working exactly as before.
 func TestAnUnaudiencedSuspensionResumesAsBefore(t *testing.T) {
 	engine, _ := approvalEngine(t, "")
 
@@ -57,9 +52,6 @@ func TestAnUnaudiencedSuspensionResumesAsBefore(t *testing.T) {
 	}
 }
 
-// Failing closed is the point. A suspension that names an audience, on an
-// engine with nobody to ask, must not resume -- otherwise the declaration is
-// a comment.
 func TestAnAudiencedSuspensionFailsClosedWithNoAuthorizer(t *testing.T) {
 	engine, store := approvalEngine(t, "finance-manager")
 
@@ -73,14 +65,12 @@ func TestAnAudiencedSuspensionFailsClosedWithNoAuthorizer(t *testing.T) {
 	if !strings.Contains(err.Error(), "no Authorizer") {
 		t.Fatalf("the refusal should say what is missing, got %q", err.Error())
 	}
-	// And the approval is still waiting for someone who may give it.
+
 	if len(store.Pending()) != 1 {
 		t.Fatal("a refused attempt must leave the run pending")
 	}
 }
 
-// The denial-of-service that a naive implementation invites: anyone holding
-// the link could burn a pending approval just by being unauthorised.
 func TestARefusalDoesNotConsumeThePointer(t *testing.T) {
 	engine, store := approvalEngine(t, "finance-manager")
 	engine.SetAuthorizer(AuthorizerFunc(func(a ResumeAttempt) (bool, string, error) {
@@ -89,7 +79,6 @@ func TestARefusalDoesNotConsumeThePointer(t *testing.T) {
 
 	parked, _ := engine.Run("payments.release", map[string]any{})
 
-	// Three unauthorised attempts.
 	for i := 0; i < 3; i++ {
 		if _, err := engine.ResumeAs(parked.StatePointer, "mallory", nil); err == nil {
 			t.Fatal("an unauthorised caller must not resume")
@@ -99,7 +88,6 @@ func TestARefusalDoesNotConsumeThePointer(t *testing.T) {
 		t.Fatal("the approval must survive unauthorised attempts")
 	}
 
-	// The person who may actually approve still can.
 	result, err := engine.ResumeAs(parked.StatePointer, "wei", map[string]any{"approved": true})
 	if err != nil {
 		t.Fatalf("the authorised caller should succeed: %v", err)
@@ -109,7 +97,6 @@ func TestARefusalDoesNotConsumeThePointer(t *testing.T) {
 	}
 }
 
-// A decision needs an author in the record, not just an outcome.
 func TestTheResumingIdentityIsRecorded(t *testing.T) {
 	engine, _ := approvalEngine(t, "finance-manager")
 	engine.SetAuthorizer(AuthorizerFunc(func(ResumeAttempt) (bool, string, error) {
@@ -126,9 +113,6 @@ func TestTheResumingIdentityIsRecorded(t *testing.T) {
 	}
 }
 
-// The authorizer is told what it needs to rule on, including why the run is
-// parked -- "approve a $2 refund" and "approve a $2m transfer" are not the
-// same decision.
 func TestTheAuthorizerSeesTheWholeAttempt(t *testing.T) {
 	engine, _ := approvalEngine(t, "finance-manager")
 
@@ -154,7 +138,6 @@ func TestTheAuthorizerSeesTheWholeAttempt(t *testing.T) {
 	}
 }
 
-// An authorizer that cannot reach its directory has not said yes.
 func TestAnAuthorizerErrorIsARefusalNotAnApproval(t *testing.T) {
 	engine, store := approvalEngine(t, "finance-manager")
 	engine.SetAuthorizer(AuthorizerFunc(func(ResumeAttempt) (bool, string, error) {
@@ -176,8 +159,6 @@ func TestAnAuthorizerErrorIsARefusalNotAnApproval(t *testing.T) {
 	}
 }
 
-// Plain Resume carries no identity, so it cannot answer a suspension that
-// asks who is calling.
 func TestPlainResumeCannotAnswerAnAudiencedSuspension(t *testing.T) {
 	engine, _ := approvalEngine(t, "finance-manager")
 	engine.SetAuthorizer(AuthorizerFunc(func(a ResumeAttempt) (bool, string, error) {
@@ -190,8 +171,6 @@ func TestPlainResumeCannotAnswerAnAudiencedSuspension(t *testing.T) {
 	}
 }
 
-// The audience is saved with the run, so the rule about who may answer
-// survives a restart rather than being lost with the process that set it.
 func TestTheAudienceIsSavedWithTheRun(t *testing.T) {
 	engine, store := approvalEngine(t, "ir-oncall")
 	if _, err := engine.Run("payments.release", map[string]any{}); err != nil {

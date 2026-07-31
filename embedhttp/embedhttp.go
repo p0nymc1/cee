@@ -1,16 +1,3 @@
-// Package embedhttp is a real backend for the intent router's Vectorizer:
-// it turns text into an embedding by calling any OpenAI-compatible
-// /v1/embeddings endpoint (OpenAI, a local text-embedding server, ...) using
-// only net/http and encoding/json.
-//
-// Like llmhttp, it is SDK-free on purpose, so wiring real semantic intent
-// matching into CEE costs zero external dependencies. A *Client satisfies
-// intentrouter.Vectorizer, so:
-//
-//	router.SetVectorizer(embedhttp.New(embedhttp.Config{BaseURL: ..., Model: ...}))
-//
-// upgrades a router from token-overlap to cosine-over-embeddings without any
-// other change.
 package embedhttp
 
 import (
@@ -22,28 +9,23 @@ import (
 	"strings"
 )
 
-// Doer is the slice of *http.Client the client needs; tests inject a fake so
-// the suite stays hermetic and offline.
 type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// Config points the client at an embeddings endpoint.
 type Config struct {
-	BaseURL    string // e.g. https://api.openai.com/v1
-	Model      string // e.g. text-embedding-3-small
-	APIKey     string // sent as a Bearer token when non-empty
-	HTTPClient Doer   // defaults to http.DefaultClient
+	BaseURL    string
+	Model      string
+	APIKey     string
+	HTTPClient Doer
 }
 
-// Client is an intentrouter.Vectorizer backed by an HTTP embeddings endpoint.
 type Client struct {
 	cfg      Config
 	client   Doer
 	endpoint string
 }
 
-// New builds a Client from cfg.
 func New(cfg Config) *Client {
 	client := cfg.HTTPClient
 	if client == nil {
@@ -67,7 +49,6 @@ type embedResponse struct {
 	} `json:"data"`
 }
 
-// Vectorize satisfies intentrouter.Vectorizer.
 func (c *Client) Vectorize(text string) ([]float64, error) {
 	reqBody, err := json.Marshal(embedRequest{Model: c.cfg.Model, Input: text})
 	if err != nil {

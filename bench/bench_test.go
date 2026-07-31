@@ -38,8 +38,8 @@ func TestRunAggregatesAllEvents(t *testing.T) {
 	suite := Suite{
 		PluginName: "sla-guard",
 		Events: []Event{
-			{WorkflowRef: "sla-guard.evaluate", Context: map[string]any{"response_minutes": 30.0}},  // within: check + met = 2 det steps
-			{WorkflowRef: "sla-guard.evaluate", Context: map[string]any{"response_minutes": 120.0}}, // breach: check fails -> breaker -> breach = 1 det step + 1 breaker
+			{WorkflowRef: "sla-guard.evaluate", Context: map[string]any{"response_minutes": 30.0}},
+			{WorkflowRef: "sla-guard.evaluate", Context: map[string]any{"response_minutes": 120.0}},
 		},
 	}
 	result := Run(*domain, suite)
@@ -47,10 +47,7 @@ func TestRunAggregatesAllEvents(t *testing.T) {
 	if result.Events != 2 || result.Errors != 0 {
 		t.Fatalf("expected 2 events 0 errors, got %+v", result)
 	}
-	// within-sla path: check + met = 2 deterministic steps. breach path:
-	// check runs (its comparison is a real deterministic op, it just fails
-	// and routes on) + breach = 2 more. A step failing its action still ran;
-	// only a sandbox-blocked step goes uncounted. -> 4 deterministic, 0 LLM.
+
 	if result.DeterministicSteps != 4 {
 		t.Fatalf("expected 4 deterministic steps, got %d", result.DeterministicSteps)
 	}
@@ -68,10 +65,10 @@ func TestRunAggregatesAllEvents(t *testing.T) {
 func TestLeaderboardRanksByDeterminism(t *testing.T) {
 	high := Result{PluginName: "high"}
 	high.DeterministicSteps = 9
-	high.LLMCalls = 1 // 90%
+	high.LLMCalls = 1
 	low := Result{PluginName: "low"}
 	low.DeterministicSteps = 1
-	low.LLMCalls = 1 // 50%
+	low.LLMCalls = 1
 
 	ranked := Leaderboard([]Result{low, high})
 	if ranked[0].PluginName != "high" || ranked[1].PluginName != "low" {

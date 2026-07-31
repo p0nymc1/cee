@@ -9,8 +9,6 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// Severity distinguishes issues that make a manifest invalid from advisory
-// ones that only warn.
 type Severity string
 
 const (
@@ -18,18 +16,15 @@ const (
 	Warning Severity = "warning"
 )
 
-// Issue is a single validation finding.
 type Issue struct {
 	Severity Severity
 	Message  string
 }
 
-// Report is the outcome of validating a manifest.
 type Report struct {
 	Issues []Issue
 }
 
-// OK reports whether the manifest is free of errors (warnings are allowed).
 func (r Report) OK() bool {
 	for _, issue := range r.Issues {
 		if issue.Severity == Error {
@@ -47,16 +42,6 @@ func (r *Report) warnf(format string, args ...any) {
 	r.Issues = append(r.Issues, Issue{Warning, fmt.Sprintf(format, args...)})
 }
 
-// Validate statically checks a manifest's structural and reference
-// integrity without executing anything, so a contributor can verify a
-// plugin before it ever runs. A manifest that uses only standard-library
-// actions can be validated completely; steps that reference domain-specific
-// Go hooks can only be structurally checked here (hook existence is verified
-// at Load time), which is called out as a warning.
-//
-// std supplies the known standard actions; pass stdlib.Default() for the
-// built-ins. It may be nil, in which case every action_ref is treated as a
-// custom hook.
 func Validate(data []byte, std stdlib.Library) Report {
 	var report Report
 
@@ -69,7 +54,7 @@ func Validate(data []byte, std stdlib.Library) Report {
 		report.errf("missing domain name")
 	}
 
-	policyFallbacks := map[string]string{} // policyID -> fallbackStepRef
+	policyFallbacks := map[string]string{}
 	for _, p := range file.Policies {
 		if p.PolicyID == "" {
 			report.errf("a policy is missing policy_id")
@@ -157,8 +142,7 @@ func validateStep(report *Report, wf WorkflowSpec, s StepSpec, stepIDs, workflow
 	}
 
 	if s.CompensateWith != "" {
-		// A dangling compensation is worse than none: the run believes the
-		// step is reversible and only finds out otherwise while abandoning.
+
 		if !stepIDs[s.CompensateWith] {
 			report.errf("%s: compensate_with %q is not a step in this workflow", where, s.CompensateWith)
 		}
@@ -203,16 +187,6 @@ func validateStep(report *Report, wf WorkflowSpec, s StepSpec, stepIDs, workflow
 	}
 }
 
-// validateStepGraph checks the shapes that make Engine.Run runaway or leave
-// dead weight in a DAG: a cycle the happy path can spin on forever, and steps
-// nothing can ever reach.
-//
-// Two edge kinds exist between steps. on_success is the happy path, taken
-// whenever a step succeeds; a cycle over those edges alone is unconditionally
-// a hang, so it is an error. A policy's fallback_step_ref is only taken when
-// a step fails, so a cycle that needs a fallback edge to close requires
-// repeated failure to actually spin -- reachable, but not certain, so it is a
-// warning rather than an error.
 func validateStepGraph(report *Report, wf WorkflowSpec, stepIDs map[string]bool, policyFallbacks map[string]string) {
 	successEdges := map[string][]string{}
 	allEdges := map[string][]string{}
@@ -260,10 +234,6 @@ func validateStepGraph(report *Report, wf WorkflowSpec, stepIDs map[string]bool,
 	}
 }
 
-// validateSubWorkflowAcyclic checks composite nesting across the manifest's
-// workflows. Unlike an on_success cycle -- which merely spins -- a
-// sub_workflow_ref cycle recurses until the Go runtime aborts the process
-// with a stack overflow that cannot be recovered, so it is always an error.
 func validateSubWorkflowAcyclic(report *Report, workflows []WorkflowSpec) {
 	edges := map[string][]string{}
 	var order []string
@@ -286,9 +256,6 @@ func validateSubWorkflowAcyclic(report *Report, workflows []WorkflowSpec) {
 	}
 }
 
-// findCycle returns one cycle as the path that closes it (first node repeated
-// at the end), or nil when the graph is acyclic. Nodes are visited in the
-// given order so the result is stable across runs.
 func findCycle(nodes []string, edges map[string][]string) []string {
 	const (
 		unvisited = 0
@@ -305,8 +272,7 @@ func findCycle(nodes []string, edges map[string][]string) []string {
 		for _, next := range edges[node] {
 			switch state[next] {
 			case onStack:
-				// Trim the prefix that leads into the cycle but is not part
-				// of it, so the report shows the loop and nothing else.
+
 				for i, n := range path {
 					if n == next {
 						return append(append([]string{}, path[i:]...), next)
@@ -334,7 +300,6 @@ func findCycle(nodes []string, edges map[string][]string) []string {
 	return nil
 }
 
-// String renders a report as human-readable lines, errors first.
 func (r Report) String() string {
 	if len(r.Issues) == 0 {
 		return "ok: no issues"

@@ -12,9 +12,6 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// TestRepoCatalogLintsClean guards the actual catalog shipped in this repo:
-// every listed plugin must pass Lint. Because the catalog test runs with its
-// own package directory as the working directory, "." is the catalog root.
 func TestRepoCatalogLintsClean(t *testing.T) {
 	cat, err := Load(".")
 	if err != nil {
@@ -29,8 +26,6 @@ func TestRepoCatalogLintsClean(t *testing.T) {
 	}
 }
 
-// TestInstallAndRunFromRepoCatalog installs a real listed plugin and runs it,
-// proving a no-code plugin travels from catalog to a live engine as data.
 func TestInstallAndRunFromRepoCatalog(t *testing.T) {
 	cat, err := Load(".")
 	if err != nil {
@@ -93,7 +88,7 @@ func TestLintCatchesBadManifestAndDuplicateName(t *testing.T) {
 			{"name": "broken", "tier": "L9", "version": "0.1.0", "domain": "broken", "manifest": "broken.json"}
 		]
 	}`)
-	// dup.json is a valid no-code manifest; broken.json dangles on_success.
+
 	writeFile(t, filepath.Join(root, "dup.json"), `{
 		"name": "dup",
 		"workflows": [{"workflow_id": "dup.wf", "entry_step_id": "a",

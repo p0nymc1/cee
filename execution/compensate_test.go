@@ -9,8 +9,6 @@ import (
 	"github.com/p0nymc1/cee/entities"
 )
 
-// ledger stands in for the world: what a step actually did, and what an undo
-// actually reversed.
 type ledger struct{ events []string }
 
 func (l *ledger) record(event string) Action {
@@ -27,8 +25,6 @@ func (l *ledger) fail(event string) Action {
 	}
 }
 
-// A three-step booking: charge the card, reserve the seat, then issue the
-// ticket. Issuing fails, and the first two have already happened.
 func booking(l *ledger, issue Action) *Workflow {
 	return &Workflow{
 		WorkflowID:  "travel.book",
@@ -61,8 +57,7 @@ func TestAbandonedRunUnwindsInReverseOrder(t *testing.T) {
 	if !errors.As(err, &tripped) {
 		t.Fatalf("expected the run to be abandoned, got %v", err)
 	}
-	// Reverse order matters: the seat is released before the card is refunded,
-	// because the reservation was made against the charge.
+
 	want := []string{"charged", "reserved", "issue", "released", "refunded"}
 	if strings.Join(l.events, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, l.events)
@@ -75,8 +70,6 @@ func TestAbandonedRunUnwindsInReverseOrder(t *testing.T) {
 	}
 }
 
-// A step with a fallback is saying "I have a plan B". Continuing into it is
-// the intended handling, so the work behind it must not be torn down.
 func TestAFallbackDoesNotTriggerAnUnwind(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(nil)
@@ -99,8 +92,6 @@ func TestAFallbackDoesNotTriggerAnUnwind(t *testing.T) {
 	}
 }
 
-// The worst case the engine can report: the action happened and reversing it
-// also failed, so only a person can resolve it. It must be loud, not swallowed.
 func TestAFailedCompensationIsReportedNotRetried(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(nil)
@@ -121,15 +112,15 @@ func TestAFailedCompensationIsReportedNotRetried(t *testing.T) {
 	if tripped.CompensationFailures[0].StepID != "charge" {
 		t.Fatalf("the failure should name the step that could not be undone, got %+v", tripped.CompensationFailures[0])
 	}
-	// The seat still came back, so a partial unwind is still worth doing.
+
 	if len(tripped.Compensated) != 1 || tripped.Compensated[0] != "reserve" {
 		t.Fatalf("the successful part of the unwind should be reported too, got %v", tripped.Compensated)
 	}
-	// It must be impossible to miss in the error text.
+
 	if !strings.Contains(err.Error(), "COULD NOT UNDO") {
 		t.Fatalf("an unreversed side effect must be prominent, got %q", err.Error())
 	}
-	// Once is once. A failed undo is never retried.
+
 	refunds := 0
 	for _, event := range l.events {
 		if event == "refund" {
@@ -141,8 +132,6 @@ func TestAFailedCompensationIsReportedNotRetried(t *testing.T) {
 	}
 }
 
-// A step that declares no compensation is reported as simply not undoable
-// rather than silently skipped.
 func TestStepsWithoutCompensationAreLeftAlone(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(nil)
@@ -150,8 +139,7 @@ func TestStepsWithoutCompensationAreLeftAlone(t *testing.T) {
 		WorkflowID:  "w",
 		EntryStepID: "notify",
 		Steps: map[string]Step{
-			// Sending an email cannot be unsent, and pretending otherwise
-			// would be worse than admitting it.
+
 			"notify": &LeafStep{StepID: "notify", Run: l.record("emailed"), OnSuccess: "charge"},
 			"charge": &LeafStep{StepID: "charge", Run: l.fail("charge")},
 		},
@@ -171,9 +159,6 @@ func TestStepsWithoutCompensationAreLeftAlone(t *testing.T) {
 	}
 }
 
-// A compensation pointing at a step that does not exist is a defect in the
-// workflow, and has to surface as an unreversed side effect rather than as
-// nothing at all.
 func TestAMissingCompensationStepIsReportedAsAFailure(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(nil)
@@ -201,8 +186,6 @@ func TestAMissingCompensationStepIsReportedAsAFailure(t *testing.T) {
 	}
 }
 
-// A runaway DAG means the workflow's shape is wrong. Running its compensations
-// would be acting on a description nobody should trust yet.
 func TestStructuralFailuresDoNotUnwind(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(nil)
@@ -233,8 +216,6 @@ func TestStructuralFailuresDoNotUnwind(t *testing.T) {
 	}
 }
 
-// A probe refusing is a failure like any other: if the run is abandoned, work
-// already done still has to come back.
 func TestAProbeRefusalAlsoUnwinds(t *testing.T) {
 	l := &ledger{}
 	engine := NewEngine(proberFn(func() (bool, string) { return false, "target is closed" }))
@@ -263,7 +244,6 @@ func TestAProbeRefusalAlsoUnwinds(t *testing.T) {
 	}
 }
 
-// proberFn is a one-line Prober for tests that only care about the verdict.
 type proberFn func() (bool, string)
 
 func (f proberFn) Probe(entities.ProbeRequest) (entities.ProbeResult, error) {

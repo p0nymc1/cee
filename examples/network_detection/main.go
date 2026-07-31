@@ -1,27 +1,3 @@
-// Command network_detection is a realistic network intrusion detection
-// domain: alerts arrive, get matched to a MITRE ATT&CK technique, and are
-// contained automatically -- unless containment would cause more damage than
-// the intrusion.
-//
-// That last clause is the whole point, and it is why detection teams distrust
-// automated response. The dangerous cases are not the ones where the detector
-// is wrong; they are the ones where it is right and the response is still
-// catastrophic:
-//
-//   - blocking the source of a password spray, when that source is your own
-//     VPN egress, disconnects every remote worker;
-//   - blocking a beaconing destination, when the destination is a shared CDN
-//     node, takes out unrelated production traffic;
-//   - isolating a host that turns out to be a domain controller or the jump
-//     host the responders themselves log in through.
-//
-// A SOC handles this with a human in the loop, which does not scale. CEE
-// handles it with a pre-execution sandbox probe: the blast radius is assessed
-// before the action runs, and a refusal routes through the circuit breaker to
-// an analyst instead of executing. The probe reads inventory and never writes,
-// per handbook rule 1.2.
-//
-// Run it with `go run ./examples/network_detection`.
 package main
 
 import (
@@ -38,12 +14,6 @@ import (
 
 const manifestPath = "examples/manifests/network-detection.json"
 
-// The three inventories below are the security domain's own data. The engine
-// knows nothing about any of it -- that is rule 1.4. Only the probe reads
-// them, and only to answer "what else would this action take down?".
-
-// egressIdentity maps an address to what sits behind it. Blocking one of these
-// does not block an attacker; it blocks everyone sharing that egress.
 var egressIdentity = map[string]string{
 	"203.0.113.10": "our HQ NAT egress — about 1,400 staff share this address",
 	"203.0.113.11": "our VPN concentrator — about 900 remote workers egress here",
@@ -53,7 +23,7 @@ var egressIdentity = map[string]string{
 type asset struct {
 	role       string
 	critical   bool
-	dependents int // services or users that stop working if this host is isolated
+	dependents int
 }
 
 var inventory = map[string]asset{
@@ -66,16 +36,11 @@ var inventory = map[string]asset{
 	"build-07": {"CI build agent", false, 3},
 }
 
-// breakGlass accounts are the ones responders use when everything else is
-// broken. Disabling one during an incident removes the way out of it.
 var breakGlass = map[string]bool{
 	"svc-emergency": true,
 	"ir-oncall":     true,
 }
 
-// containmentSOP maps a technique to the standard response. Deterministic
-// code, not a model: the same alert always yields the same action, and the
-// mapping can be reviewed and argued about in a change request.
 var containmentSOP = map[string]struct{ action, targetField string }{
 	"network-detection.T1046_service_discovery": {"isolate_host", "target_host"},
 	"network-detection.T1021_lateral_movement":  {"isolate_host", "target_host"},
@@ -94,8 +59,6 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 	sb := sandbox.NewSandbox()
 	engine := execution.NewEngine(sb)
 
-	// The guardrail. It runs before containment, reads inventory only, and
-	// answers one question: what else does this take down?
 	sb.RegisterProbe("netdet.assess_blast_radius", func(ctx map[string]any) (bool, string, error) {
 		action, _ := ctx["response_action"].(string)
 		target, _ := ctx["response_target"].(string)
@@ -127,8 +90,7 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 	})
 
 	hooks := manifest.Hooks{
-		// Technique -> standard response. No model involved; the alert's own
-		// fields decide the target.
+
 		"netdet.select_response": func(ctx map[string]any) (map[string]any, error) {
 			technique, _ := ctx["technique"].(string)
 			sop, known := containmentSOP[technique]
@@ -142,7 +104,6 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 			return map[string]any{"response_action": sop.action, "response_target": target}, nil
 		},
 
-		// Only ever reached once the probe judged the blast radius acceptable.
 		"netdet.apply_containment": func(ctx map[string]any) (map[string]any, error) {
 			return map[string]any{
 				"executed": fmt.Sprintf("%v on %v", ctx["response_action"], ctx["response_target"]),
@@ -158,13 +119,12 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 	return router, engine, nil
 }
 
-// alert is one detection as it would arrive from an IDS, NDR or EDR.
 type alert struct {
-	summary    string  // free text, as the detector phrased it
-	confidence float64 // the detector's own confidence
-	peerIP     string  // the external or remote party
-	targetHost string  // the internal asset involved
-	note       string  // what this case is here to show
+	summary    string
+	confidence float64
+	peerIP     string
+	targetHost string
+	note       string
 }
 
 func main() {
@@ -226,8 +186,7 @@ func handle(router *intentrouter.Router, engine *execution.Engine, a alert) {
 
 	match := router.Match("network-detection", a.summary)
 	if !match.Matched {
-		// An honest miss, not a guess. The caller decides what happens next --
-		// typically edge LLM extraction, then a human.
+
 		fmt.Printf("  -> no ATT&CK technique matched (best score %.2f); would fall through to extraction\n", match.Confidence)
 		return
 	}
@@ -248,7 +207,7 @@ func handle(router *intentrouter.Router, engine *execution.Engine, a alert) {
 	if executed, ok := result.Output["executed"]; ok {
 		fmt.Printf("     action: %v\n", executed)
 	}
-	// When the breaker diverted, the engine records why the gated step refused.
+
 	if why, ok := result.Output[execution.FailureReasonKey]; ok {
 		fmt.Printf("     because: %v\n", why)
 	}

@@ -1,24 +1,3 @@
-// Command crypto_surveillance screens live crypto market data for anomalies
-// worth a human's attention.
-//
-// It is market surveillance, not investment advice. Every rule is a fixed
-// threshold written in a manifest or in deterministic Go; nothing here decides
-// whether an asset is worth buying, and no model is asked to. The output is
-// "this data point is unusual, someone should look" -- the same shape as the
-// network detection domain, with market data in place of alerts.
-//
-// The interesting part is the guardrail. Acting on market data is dangerous
-// for reasons that have nothing to do with the rules being wrong:
-//
-//   - a quote that is minutes stale describes a market that has moved on;
-//   - a large percentage move on a thin book is noise, not a signal -- a few
-//     hundred thousand dollars can move an illiquid asset several percent.
-//
-// Both are checked by a pre-execution sandbox probe, so a finding computed
-// from data too stale or too thin to trust is held rather than raised. The
-// probe reads and compares; it never writes, per handbook rule 1.2.
-//
-// Run it with `go run ./examples/crypto_surveillance`.
 package main
 
 import (
@@ -38,24 +17,19 @@ import (
 
 const manifestPath = "examples/manifests/crypto-surveillance.json"
 
-// Thresholds are constants rather than model judgements, so a finding can be
-// argued with, reproduced, and changed in a reviewed commit.
 const (
-	materialMovePct = 2.0   // a 24h move at or beyond this is worth a look
-	pegTolerancePct = 0.5   // a stablecoin this far from 1.00 is worth a look
-	liquidityFloor  = 250e6 // below this 24h volume, a percentage move is noise
+	materialMovePct = 2.0
+	pegTolerancePct = 0.5
+	liquidityFloor  = 250e6
 	maxQuoteAge     = 15 * time.Minute
 )
 
-// stablecoins are screened against their peg instead of against volatility:
-// a 2% move in a coin that is supposed to be worth exactly one dollar means
-// something entirely different from a 2% move in bitcoin.
 var stablecoins = map[string]bool{"tether": true, "usd-coin": true, "dai": true}
 
 var watchlist = []string{
 	"bitcoin", "ethereum", "solana", "dogecoin",
-	"tether", "usd-coin", // screened against the peg
-	"chainlink", "litecoin", // thinner books, to exercise the liquidity guardrail
+	"tether", "usd-coin",
+	"chainlink", "litecoin",
 }
 
 func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
@@ -68,7 +42,6 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 	sb := sandbox.NewSandbox()
 	engine := execution.NewEngine(sb)
 
-	// The guardrail: is this data good enough to raise a finding on?
 	sb.RegisterProbe("crypto.assess_signal_quality", func(ctx map[string]any) (bool, string, error) {
 		age, _ := ctx["quote_age_seconds"].(float64)
 		volume, _ := ctx["volume_24h"].(float64)
@@ -85,7 +58,7 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 	})
 
 	hooks := manifest.Hooks{
-		// Derived facts only. Nothing here decides anything.
+
 		"crypto.enrich": func(ctx map[string]any) (map[string]any, error) {
 			price, _ := ctx["price_usd"].(float64)
 			change, _ := ctx["change_pct_24h"].(float64)
@@ -96,8 +69,6 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 			}, nil
 		},
 
-		// Applies the one rule that fits the asset class. Deterministic: the
-		// same quote always produces the same finding.
 		"crypto.assess": func(ctx map[string]any) (map[string]any, error) {
 			asset, _ := ctx["asset"].(string)
 			if stablecoins[asset] {
@@ -122,7 +93,6 @@ func buildRuntime() (*intentrouter.Router, *execution.Engine, error) {
 			return map[string]any{"finding": "none", "detail": fmt.Sprintf("%.2f%% over 24h", abs)}, nil
 		},
 
-		// Only reached once the probe judged the data trustworthy.
 		"crypto.raise_alert": func(ctx map[string]any) (map[string]any, error) {
 			return map[string]any{
 				"raised": fmt.Sprintf("%v: %v", ctx["finding"], ctx["detail"]),
@@ -145,7 +115,6 @@ func direction(change float64) string {
 	return "up"
 }
 
-// screen runs one quote through the engine and returns a one-line verdict.
 func screen(engine *execution.Engine, entry string, q Quote, now time.Time) (string, error) {
 	result, err := engine.Run(entry, map[string]any{
 		"asset":             q.Asset,
@@ -164,8 +133,7 @@ func screen(engine *execution.Engine, entry string, q Quote, now time.Time) (str
 	} else if detail, ok := result.Output["detail"]; ok {
 		line += fmt.Sprintf("  (%v)", detail)
 	}
-	// The guardrail held it: say what the probe objected to, or the hold is
-	// just as opaque as no answer at all.
+
 	if result.Output["disposition"] == heldDisposition {
 		if why, ok := result.Output[execution.FailureReasonKey].(string); ok {
 			line += "\n" + strings.Repeat(" ", 23) + "because: " + why
@@ -174,7 +142,6 @@ func screen(engine *execution.Engine, entry string, q Quote, now time.Time) (str
 	return line, nil
 }
 
-// heldDisposition must match the manifest's hold_low_quality step.
 const heldDisposition = "not flagged: the data is not good enough to act on"
 
 func trimPrice(p float64) string {
@@ -208,8 +175,7 @@ func main() {
 
 	quotes, err := NewFeed().Quotes(watchlist)
 	if err != nil {
-		// Reported, never faked, and never fatal: a surveillance sweep that
-		// could not read the market is a fact worth printing, not a crash.
+
 		fmt.Printf("market data unavailable: %v\n", err)
 		fmt.Println("no sweep performed — the engine is only as current as its feed")
 		return

@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Conn is one established outbound connection as the operating system
-// reports it.
 type Conn struct {
 	Process  string
 	PID      int
@@ -22,15 +20,6 @@ func (c Conn) String() string {
 	return fmt.Sprintf("%s[%d] -> %s:%d", c.Process, c.PID, c.PeerIP, c.PeerPort)
 }
 
-// Established reads the machine's current TCP connections.
-//
-// lsof rather than a packet capture: reading the socket table needs no
-// elevated privileges, no interface in promiscuous mode and no third-party
-// library, so this stays inside the module's zero-dependency rule and inside
-// what an ordinary user can run on their own laptop.
-//
-// It is also the honest boundary of what this can see: established sockets,
-// not payloads. Nothing here inspects traffic.
 func Established() ([]Conn, error) {
 	out, err := exec.Command("lsof", "-iTCP", "-sTCP:ESTABLISHED", "-n", "-P").Output()
 	if err != nil {
@@ -39,9 +28,6 @@ func Established() ([]Conn, error) {
 	return parseLsof(string(out)), nil
 }
 
-// parseLsof pulls connections out of lsof's columnar output. Split out so the
-// tests run on fixed input instead of on whatever the machine happens to be
-// doing.
 func parseLsof(out string) []Conn {
 	var conns []Conn
 	for _, line := range strings.Split(out, "\n") {
@@ -49,11 +35,11 @@ func parseLsof(out string) []Conn {
 		if len(fields) < 9 || fields[0] == "COMMAND" {
 			continue
 		}
-		// The address column looks like 192.168.0.2:52345->93.184.216.34:443
+
 		addr := fields[8]
 		local, peer, ok := strings.Cut(addr, "->")
 		if !ok {
-			continue // a listening socket, not a connection
+			continue
 		}
 		localIP, _, ok := strings.Cut(local, ":")
 		if !ok {
@@ -77,10 +63,6 @@ func parseLsof(out string) []Conn {
 	return conns
 }
 
-// isPublic reports whether an address is outside this machine and its own
-// networks. Everything private, loopback or link-local is traffic that never
-// left the building, and screening it as an outbound risk would bury the
-// connections that did.
 func isPublic(addr string) bool {
 	ip := net.ParseIP(addr)
 	if ip == nil {

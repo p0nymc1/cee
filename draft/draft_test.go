@@ -13,8 +13,6 @@ import (
 	"github.com/p0nymc1/cee/stdlib"
 )
 
-// scriptedModel replies with the next canned answer each call, so the tests
-// exercise the loop without touching a network or a model.
 type scriptedModel struct {
 	replies []string
 	calls   int
@@ -68,14 +66,12 @@ func TestAValidDraftIsReturnedAndLoads(t *testing.T) {
 	if model.calls != 1 {
 		t.Fatalf("a valid first draft should not be retried, called %d times", model.calls)
 	}
-	// The contract: what comes back is not merely parseable, it binds.
+
 	if _, err := manifest.Load(result.Manifest, nil, stdlib.Default()); err != nil {
 		t.Fatalf("a returned draft must load: %v", err)
 	}
 }
 
-// The correction loop: a first attempt with a dangling reference is fed its
-// own validation errors and gets it right on the second pass.
 func TestAnInvalidDraftIsCorrectedFromItsErrors(t *testing.T) {
 	broken := `{
 	  "name":"expenses",
@@ -96,9 +92,6 @@ func TestAnInvalidDraftIsCorrectedFromItsErrors(t *testing.T) {
 	}
 }
 
-// The property this whole project exists to protect. An unbounded
-// correct-and-retry loop would be the very failure mode CEE was built to
-// avoid, so a draft that never validates stops and says so.
 func TestTheLoopIsBounded(t *testing.T) {
 	alwaysBroken := `{"name":"x","workflows":[{"workflow_id":"x.wf","entry_step_id":"missing","steps":[]}]}`
 	model := &scriptedModel{replies: []string{alwaysBroken, alwaysBroken, alwaysBroken, alwaysBroken, alwaysBroken}}
@@ -112,10 +105,6 @@ func TestTheLoopIsBounded(t *testing.T) {
 	}
 }
 
-// A model that invents an action must not get a manifest past the gate. This
-// is what makes it safe to let a model author something the engine executes:
-// the worst it can produce is a wrong arrangement of actions that already
-// existed.
 func TestAnInventedActionIsNeverAccepted(t *testing.T) {
 	invented := `{
 	  "name":"evil",
@@ -133,11 +122,8 @@ func TestAnInventedActionIsNeverAccepted(t *testing.T) {
 	}
 }
 
-// Validate only warns about an unknown action, because it cannot see a
-// domain's Go hooks. When the draft claims to need none, Load is what proves
-// the claim -- so a warning-only manifest still must not slip through.
 func TestAWarningOnlyDraftIsStillBoundBeforeAcceptance(t *testing.T) {
-	// Passes Validate with a warning (unknown action), fails Load with no hooks.
+
 	hookish := `{
 	  "name":"d",
 	  "intents":[{"node_id":"d.go","examples":["x"],"entry_workflow_ref":"d.wf"}],
@@ -161,8 +147,6 @@ func TestAWarningOnlyDraftIsStillBoundBeforeAcceptance(t *testing.T) {
 	}
 }
 
-// When the domain does declare hooks, an action naming one of them is
-// legitimate and must not be bounced.
 func TestDeclaredHooksAreAccepted(t *testing.T) {
 	withHook := `{
 	  "name":"d",
@@ -192,15 +176,10 @@ func TestAnEmptyDescriptionIsRefusedWithoutCallingTheModel(t *testing.T) {
 	}
 }
 
-// The prompt is the only thing standing between a model and an invalid
-// manifest, and the vocabulary it lists is written by hand. If stdlib gains an
-// action nobody described, drafts silently stop being able to use it.
 func TestVocabularyCoversEveryStandardAction(t *testing.T) {
 	model := &scriptedModel{replies: []string{goodManifest}}
 	cfg := configWith(model, 1)
 
-	// The prompt is not exported; a successful draft proves it was built, and
-	// the check below reads it back out of the request the model received.
 	captured := &capturingModel{}
 	cfg.LLM.HTTPClient = captured
 	_, _ = draft.Draft(cfg, "anything", nil)
@@ -235,8 +214,6 @@ func (c *capturingModel) Do(req *http.Request) (*http.Response, error) {
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(envelope)))}, nil
 }
 
-// Branching through the circuit breaker is the one rule no model will infer,
-// so the prompt has to say it outright.
 func TestPromptExplainsTheBranchingIdiom(t *testing.T) {
 	captured := &capturingModel{}
 	cfg := configWith(&scriptedModel{}, 1)

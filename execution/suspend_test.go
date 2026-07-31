@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// approvalWorkflow is the shape the security example needs: a gate that
-// parks the run for a human, and a step after it that acts on what the
-// human decided.
 func approvalWorkflow() *Workflow {
 	return &Workflow{
 		WorkflowID:  "ops.contain",
@@ -52,7 +49,7 @@ func TestSuspendParksTheRunAndReturnsAPointer(t *testing.T) {
 	if result.StatePointer == "" {
 		t.Fatal("expected a resume pointer")
 	}
-	// The pointer must be a real token, not the workflow ref it used to be.
+
 	if result.StatePointer == "ops.contain" {
 		t.Fatal("StatePointer is still echoing the workflow ref")
 	}
@@ -84,18 +81,16 @@ func TestResumeContinuesAfterTheSuspensionPoint(t *testing.T) {
 	if result.Output["contained"] != true {
 		t.Fatalf("expected the run to complete after approval, got %v", result.Output)
 	}
-	// The context from before the suspension must survive the round trip.
+
 	if result.Output["host"] != "dc01" {
 		t.Fatalf("pre-suspension context was lost, got %v", result.Output)
 	}
-	// The trace should read as one continuous run, not two fragments.
+
 	if len(result.Trace) != 2 || result.Trace[0] != "hold" || result.Trace[1] != "act" {
 		t.Fatalf("expected trace [hold act], got %v", result.Trace)
 	}
 }
 
-// The resolution is merged into context, so the step after a suspension can
-// branch on the decision like any other field -- no new engine primitive.
 func TestResumeCarriesADenialThrough(t *testing.T) {
 	engine, _ := newSuspendableEngine()
 
@@ -118,7 +113,6 @@ func TestPointerIsSingleUse(t *testing.T) {
 		t.Fatalf("first resume should succeed: %v", err)
 	}
 
-	// Replaying an approval must not be possible.
 	if _, err := engine.Resume(suspendResult.StatePointer, map[string]any{"approved": true}); err == nil {
 		t.Fatal("expected the second resume to fail; a decision must not be replayable")
 	}
@@ -128,7 +122,7 @@ func TestPointerIsSingleUse(t *testing.T) {
 }
 
 func TestSuspendWithoutAStoreFailsLoudly(t *testing.T) {
-	engine := NewEngine(nil) // no SetStore
+	engine := NewEngine(nil)
 	engine.RegisterWorkflow(approvalWorkflow())
 
 	_, err := engine.Run("ops.contain", map[string]any{})
@@ -139,8 +133,6 @@ func TestSuspendWithoutAStoreFailsLoudly(t *testing.T) {
 	}
 }
 
-// A suspension is a pause, not a fault, so a breaker must not absorb it and
-// route to a fallback -- that would silently discard the wait.
 func TestSuspensionIsNotSwallowedByACircuitBreaker(t *testing.T) {
 	store := NewMemoryStore()
 	engine := NewEngine(nil)
@@ -178,8 +170,6 @@ func TestSuspensionIsNotSwallowedByACircuitBreaker(t *testing.T) {
 	}
 }
 
-// Resuming a nested run would mean restoring the composite call stack, which
-// is not recorded. Rejecting it beats resuming into an unreasonable state.
 func TestNestedSuspensionIsRejected(t *testing.T) {
 	store := NewMemoryStore()
 	engine := NewEngine(nil)

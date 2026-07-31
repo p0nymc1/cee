@@ -13,8 +13,6 @@ import (
 	"github.com/p0nymc1/cee/httpapi"
 )
 
-// A payments desk: small amounts settle, large ones wait for a finance
-// manager, and only a finance manager may release them.
 func desk(t *testing.T) (*execution.Engine, *execution.MemoryStore) {
 	t.Helper()
 	store := execution.NewMemoryStore()
@@ -59,8 +57,6 @@ func handler(t *testing.T, engine *execution.Engine, store *execution.MemoryStor
 	return h
 }
 
-// headerIdentity stands in for real authentication. A production Identify must
-// verify something; this one is a test double and says so.
 func headerIdentity(r *http.Request) (string, error) {
 	who := r.Header.Get("X-Test-Identity")
 	if who == "" {
@@ -88,7 +84,6 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
-// An unconfigured deployment must not be an open one.
 func TestNewRefusesToServeUnauthenticatedByAccident(t *testing.T) {
 	engine, _ := desk(t)
 	_, err := httpapi.New(httpapi.Config{Engine: engine})
@@ -98,7 +93,7 @@ func TestNewRefusesToServeUnauthenticatedByAccident(t *testing.T) {
 	if !strings.Contains(err.Error(), "AllowAnonymous") {
 		t.Fatalf("the error should name the deliberate opt-out, got %v", err)
 	}
-	// Opting out on purpose is allowed.
+
 	if _, err := httpapi.New(httpapi.Config{Engine: engine, AllowAnonymous: true}); err != nil {
 		t.Fatalf("an explicit opt-out should be accepted: %v", err)
 	}
@@ -136,7 +131,6 @@ func TestRunSuspendsAndReturnsAPointer(t *testing.T) {
 	}
 }
 
-// The whole reason the authorization work came first.
 func TestResumeEnforcesTheAudience(t *testing.T) {
 	engine, store := desk(t)
 	h := handler(t, engine, store, headerIdentity)
@@ -145,14 +139,12 @@ func TestResumeEnforcesTheAudience(t *testing.T) {
 		map[string]string{"X-Test-Identity": "wei"}))
 	pointer := suspended["state_pointer"].(string)
 
-	// Someone who holds the pointer but may not approve.
 	rec := post(h, "/v1/resume", fmt.Sprintf(`{"pointer":%q,"resolution":{}}`, pointer),
 		map[string]string{"X-Test-Identity": "mallory"})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for an unauthorised caller, got %d: %s", rec.Code, rec.Body)
 	}
 
-	// The approval is still waiting for someone who may give it.
 	rec = post(h, "/v1/resume", fmt.Sprintf(`{"pointer":%q,"resolution":{}}`, pointer),
 		map[string]string{"X-Test-Identity": "wei"})
 	if rec.Code != http.StatusOK {
@@ -163,8 +155,6 @@ func TestResumeEnforcesTheAudience(t *testing.T) {
 	}
 }
 
-// A pointer in a path ends up in access logs, proxy logs and Referer headers,
-// and it authorises an approval. It travels in the body instead.
 func TestThePointerIsNotAPathParameter(t *testing.T) {
 	engine, store := desk(t)
 	h := handler(t, engine, store, headerIdentity)
@@ -173,7 +163,6 @@ func TestThePointerIsNotAPathParameter(t *testing.T) {
 		map[string]string{"X-Test-Identity": "wei"}))
 	pointer := suspended["state_pointer"].(string)
 
-	// There is no route that would put it in the URL.
 	req := httptest.NewRequest(http.MethodPost, "/v1/resume/"+pointer, strings.NewReader("{}"))
 	req.Header.Set("X-Test-Identity", "wei")
 	rec := httptest.NewRecorder()
@@ -188,19 +177,17 @@ func TestUnauthenticatedRequestsAreRejected(t *testing.T) {
 	h := handler(t, engine, store, headerIdentity)
 
 	for _, path := range []string{"/v1/run", "/v1/resume"} {
-		rec := post(h, path, `{}`, nil) // no identity header
+		rec := post(h, path, `{}`, nil)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("%s should have been rejected, got %d", path, rec.Code)
 		}
-		// A failed authentication should not explain itself to whoever failed it.
+
 		if strings.Contains(rec.Body.String(), "no identity") {
 			t.Fatalf("the rejection leaked the internal reason: %s", rec.Body)
 		}
 	}
 }
 
-// A run the engine carried to a conclusion is a served request, whatever the
-// conclusion. 500 would claim the service is broken when it is not.
 func TestAnAbandonedRunIsAServedRequestNotAServerError(t *testing.T) {
 	store := execution.NewMemoryStore()
 	engine := execution.NewEngine(nil)
@@ -231,8 +218,6 @@ func TestAnAbandonedRunIsAServedRequestNotAServerError(t *testing.T) {
 	}
 }
 
-// The operator listing shows what is waiting and why -- not the payload. A
-// parked run's context holds amounts, names and hostnames.
 func TestPendingListingOmitsTheBusinessPayload(t *testing.T) {
 	engine, store := desk(t)
 	h := handler(t, engine, store, headerIdentity)
@@ -298,7 +283,6 @@ func TestAnOversizedBodyIsRefused(t *testing.T) {
 	}
 }
 
-// A misspelled field is a mistake, not a silent default.
 func TestUnknownFieldsAreRejected(t *testing.T) {
 	engine, store := desk(t)
 	h := handler(t, engine, store, headerIdentity)
@@ -310,8 +294,6 @@ func TestUnknownFieldsAreRejected(t *testing.T) {
 	}
 }
 
-// With AllowAnonymous the engine still refuses audienced suspensions, which is
-// the point: development convenience does not become an approval bypass.
 func TestAnonymousModeStillCannotAnswerAnAudiencedSuspension(t *testing.T) {
 	engine, store := desk(t)
 	h, err := httpapi.New(httpapi.Config{
