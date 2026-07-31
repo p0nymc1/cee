@@ -1,8 +1,8 @@
 # macOS
 .DS_Store
 
-# Local Claude Code settings (per-machine permissions, not project config)
-.claude/settings.local.json
+# Local editor/tool settings (per-machine, not project config)
+.claude/
 
 # Go build artifacts
 /cee
