@@ -19,7 +19,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build install uninstall test lint bench serve draft stats clean
+.PHONY: help build install uninstall test lint bench serve draft stats site clean
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -72,6 +72,24 @@ stats: ## Print the repo figures the docs quote, so they can never drift uncheck
 	@echo "Third-party requires in go.mod:    $$(grep -c '^	' go.mod || true)"
 	@echo "Catalog plugins:                   $$(ls -1 catalog/plugins | wc -l | tr -d ' ')"
 
+site: ## Build the published site into ./site (runs the examples first)
+	@mkdir -p demo-output $(BIN_DIR)
+	@for ex in rule_change crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do \
+		printf 'running %s\n' "$$ex"; \
+		go run "./examples/$$ex" > "demo-output/$$ex.txt" 2>&1 || true; \
+	done
+	@: > demo-output/validate.txt
+	@for m in examples/manifests/*.json catalog/plugins/*/manifest.json; do \
+		printf '%-46s ' "$$m" >> demo-output/validate.txt; \
+		go run $(CMD) validate "$$m" >> demo-output/validate.txt; \
+	done
+	@go run $(CMD) list  > demo-output/list.txt
+	@go run $(CMD) bench > demo-output/bench.txt
+	@go test ./... 2>&1 | grep -c '^ok' > demo-output/packages.txt
+	@grep -rh '^func Test' --include='*_test.go' . | wc -l | tr -d ' ' > demo-output/tests.txt
+	@cd .github/site && go build -o "$(CURDIR)/$(BIN_DIR)/ceesite" .
+	@$(BIN_DIR)/ceesite
+
 clean: ## Remove build artifacts
-	rm -rf $(BIN_DIR)
-	@echo "removed $(BIN_DIR)"
+	rm -rf $(BIN_DIR) demo-output site
+	@echo "removed $(BIN_DIR), demo-output, site"

@@ -153,7 +153,15 @@ go run ./examples/meta_scenarios         # 工单路由 / 调度 / 数据同步
 go run ./examples/rule_change            # 改一条规则，算出哪些历史决定会翻转
 ```
 
-每个示例的真实输出都在 **https://p0nymc1.github.io/cee/** 上，由 CI 每小时重跑生成——不是手写的。
+每个示例的真实输出都在 **https://p0nymc1.github.io/cee/** 上，由 CI 每小时重跑生成——不是手写的。站点有三部分：
+
+| 页面 | 内容 |
+|---|---|
+| [实证页](https://p0nymc1.github.io/cee/) | 每个场景的完整执行输出，全部是捕获的真实输出 |
+| [插件排行榜](https://p0nymc1.github.io/cee/leaderboard/) | 由 `cee bench` 生成的确定性榜单，含度量口径与"这个数字不是什么"的说明 |
+| [博客](https://p0nymc1.github.io/cee/blog/) | 设计决策记录，包括做错的那些 |
+
+站点由 `.github/site`（独立 module，不进核心）生成，本地跑 `make site` 可复现。
 
 ## 安装（把 cee 装成系统命令）
 
@@ -177,6 +185,7 @@ make install     # 或者：
 | `make serve MANIFEST=<路径> ADDR=<host:port>` | 本地起 HTTP 试跑一份 manifest（默认 sla-guard；仅 loopback、无认证、内存态） |
 | `make draft DESC="<描述>"` | 用模型起草一份 workflow（需 `CEE_LLM_BASE_URL`/`CEE_LLM_MODEL` 环境变量） |
 | `make stats` | 打印文档里引用的仓库数字（行数/包数/测试数/依赖数），文档不手写数字 |
+| `make site` | 本地构建发布站点到 `./site`（先跑一遍示例，再生成实证页/排行榜/博客） |
 | `make uninstall` / `make clean` | 卸载 / 清理产物 |
 
 `make` 无参数列出全部目标。`make serve` 起来后可以直接 curl：

@@ -220,8 +220,20 @@ jobs:
           name: demo-output
           path: demo-output
 
-      - name: Build the page
-        run: bash .github/build-site.sh
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The generator is a separate module under .github/, which the go tool
+      # ignores for ./... patterns because the directory starts with a dot. So
+      # it can use html/template for escaping without touching the core
+      # module's zero-dependency guarantee.
+      - name: Build the site
+        run: |
+          ( cd .github/site && go test ./... && go build -o "$GITHUB_WORKSPACE/ceesite" . )
+          ./ceesite
 
       - uses: actions/upload-pages-artifact@v3
         with:
