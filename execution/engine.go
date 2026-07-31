@@ -257,6 +257,25 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 			ctx = merge(ctx, subResult.Output)
 			stepID = s.OnSuccess
 
+		case *ParallelStep:
+			joined, branchTrace, err := e.runParallel(workflow, s, ctx, depth)
+			if err != nil {
+				if bypassesBreaker(err) {
+					return entities.WorkflowResult{}, err
+				}
+				e.observe(func(o Observer) { o.ObserveCircuitBreaker(workflow.WorkflowID, s.StepID) })
+				next, nextCtx, breakErr := e.onFailure(s, err.Error(), ctx)
+				if breakErr != nil {
+					return entities.WorkflowResult{}, e.abandon(workflow, done, ctx, breakErr)
+				}
+				ctx = nextCtx
+				stepID = next
+				continue
+			}
+			trace = append(trace, branchTrace...)
+			ctx = joined
+			stepID = s.OnSuccess
+
 		case *LeafStep:
 			if s.SandboxProbeRef != "" {
 				sb := e.prober()
@@ -445,10 +464,16 @@ func bypassesBreaker(err error) bool {
 	var depthLimit *DepthLimitExceeded
 	var nested *NestedSuspensionUnsupported
 	var noStore *NoSuspensionSupport
+	var noBranches *NoBranches
+	var conflict *ConflictingBranchWrites
+	var panicked *BranchPanicked
 	return errors.As(err, &stepLimit) ||
 		errors.As(err, &depthLimit) ||
 		errors.As(err, &nested) ||
-		errors.As(err, &noStore)
+		errors.As(err, &noStore) ||
+		errors.As(err, &noBranches) ||
+		errors.As(err, &conflict) ||
+		errors.As(err, &panicked)
 }
 
 func tail(s []string, n int) []string {

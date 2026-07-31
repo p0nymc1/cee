@@ -1,0 +1,103 @@
+{
+  "name": "onboarding",
+  "intents": [
+    {
+      "node_id": "onboarding.screen_applicant",
+      "examples": ["new account application", "screen this applicant", "onboard a customer"],
+      "entry_workflow_ref": "onboarding.screen"
+    }
+  ],
+  "policies": [
+    {"policy_id": "route_to_manual_review", "fallback_step_ref": "manual_review"},
+    {"policy_id": "decline_application", "fallback_step_ref": "decline"}
+  ],
+  "workflows": [
+    {
+      "workflow_id": "onboarding.screen",
+      "entry_step_id": "run_checks",
+      "steps": [
+        {
+          "step_id": "run_checks",
+          "type": "parallel",
+          "branches": [
+            "onboarding.credit_check",
+            "onboarding.sanctions_check",
+            "onboarding.address_check"
+          ],
+          "circuit_breaker_policy_ref": "route_to_manual_review",
+          "on_success": "require_all_clear"
+        },
+        {
+          "step_id": "require_all_clear",
+          "type": "leaf",
+          "action_ref": "std.require",
+          "with": {"field": "sanctions_hit", "op": "eq", "value": false},
+          "circuit_breaker_policy_ref": "decline_application",
+          "on_success": "require_credit"
+        },
+        {
+          "step_id": "require_credit",
+          "type": "leaf",
+          "action_ref": "std.require",
+          "with": {"field": "credit_score", "op": "gte", "value": 650},
+          "circuit_breaker_policy_ref": "route_to_manual_review",
+          "on_success": "approve"
+        },
+        {
+          "step_id": "approve",
+          "type": "leaf",
+          "action_ref": "std.set",
+          "with": {"fields": {"outcome": "approved"}}
+        },
+        {
+          "step_id": "manual_review",
+          "type": "leaf",
+          "action_ref": "std.set",
+          "with": {"fields": {"outcome": "manual_review"}}
+        },
+        {
+          "step_id": "decline",
+          "type": "leaf",
+          "action_ref": "std.set",
+          "with": {"fields": {"outcome": "declined"}}
+        }
+      ]
+    },
+    {
+      "workflow_id": "onboarding.credit_check",
+      "entry_step_id": "score",
+      "steps": [
+        {
+          "step_id": "score",
+          "type": "leaf",
+          "action_ref": "std.rule_check",
+          "with": {"field": "credit_score", "op": "gte", "value": 650, "result_field": "credit_ok"}
+        }
+      ]
+    },
+    {
+      "workflow_id": "onboarding.sanctions_check",
+      "entry_step_id": "screen",
+      "steps": [
+        {
+          "step_id": "screen",
+          "type": "leaf",
+          "action_ref": "std.rule_check",
+          "with": {"field": "country", "op": "in", "value": ["KP", "IR", "SY"], "result_field": "sanctions_hit"}
+        }
+      ]
+    },
+    {
+      "workflow_id": "onboarding.address_check",
+      "entry_step_id": "verify",
+      "steps": [
+        {
+          "step_id": "verify",
+          "type": "leaf",
+          "action_ref": "std.rule_check",
+          "with": {"field": "address_age_months", "op": "gte", "value": 6, "result_field": "address_stable"}
+        }
+      ]
+    }
+  ]
+}

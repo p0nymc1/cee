@@ -60,6 +60,8 @@ type StepSpec struct {
 	OnSuccess               string         `json:"on_success,omitempty"`
 	SubWorkflowRef          string         `json:"sub_workflow_ref,omitempty"`
 
+	Branches []string `json:"branches,omitempty"`
+
 	CompensateWith string `json:"compensate_with,omitempty"`
 }
 
@@ -145,9 +147,39 @@ func buildStep(domainName, workflowID string, spec StepSpec, hooks Hooks, std st
 			CircuitBreakerPolicyRef: spec.CircuitBreakerPolicyRef,
 			OnSuccess:               spec.OnSuccess,
 		}, nil
+	case "parallel":
+		if len(spec.Branches) == 0 {
+			return nil, fmt.Errorf(
+				"manifest: domain %q workflow %q step %q is parallel but has no branches",
+				domainName, workflowID, spec.StepID,
+			)
+		}
+		seen := make(map[string]bool, len(spec.Branches))
+		for _, branch := range spec.Branches {
+			if branch == "" {
+				return nil, fmt.Errorf(
+					"manifest: domain %q workflow %q step %q lists an empty branch",
+					domainName, workflowID, spec.StepID,
+				)
+			}
+			if seen[branch] {
+				return nil, fmt.Errorf(
+					"manifest: domain %q workflow %q step %q lists branch %q twice; "+
+						"running one workflow twice in parallel joins it against itself",
+					domainName, workflowID, spec.StepID, branch,
+				)
+			}
+			seen[branch] = true
+		}
+		return &execution.ParallelStep{
+			StepID:                  spec.StepID,
+			Branches:                append([]string(nil), spec.Branches...),
+			CircuitBreakerPolicyRef: spec.CircuitBreakerPolicyRef,
+			OnSuccess:               spec.OnSuccess,
+		}, nil
 	default:
 		return nil, fmt.Errorf(
-			"manifest: domain %q workflow %q step %q has unknown type %q (want \"leaf\" or \"composite\")",
+			"manifest: domain %q workflow %q step %q has unknown type %q (want \"leaf\", \"composite\" or \"parallel\")",
 			domainName, workflowID, spec.StepID, spec.Type,
 		)
 	}

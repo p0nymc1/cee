@@ -149,7 +149,7 @@ func validateStep(report *Report, wf WorkflowSpec, s StepSpec, stepIDs, workflow
 		if s.CompensateWith == s.StepID {
 			report.errf("%s: compensate_with points at itself", where)
 		}
-		if s.Type == "composite" {
+		if s.Type == "composite" || s.Type == "parallel" {
 			report.errf("%s: only a leaf step can declare compensate_with", where)
 		}
 	}
@@ -182,8 +182,28 @@ func validateStep(report *Report, wf WorkflowSpec, s StepSpec, stepIDs, workflow
 		} else if !workflowIDs[s.SubWorkflowRef] {
 			report.errf("%s: sub_workflow_ref %q does not match any workflow_id", where, s.SubWorkflowRef)
 		}
+	case "parallel":
+		if len(s.Branches) == 0 {
+			report.errf("%s: parallel step has no branches", where)
+			return
+		}
+		seen := map[string]bool{}
+		for _, branch := range s.Branches {
+			switch {
+			case branch == "":
+				report.errf("%s: branches contains an empty workflow_id", where)
+			case !workflowIDs[branch]:
+				report.errf("%s: branch %q does not match any workflow_id", where, branch)
+			case seen[branch]:
+				report.errf("%s: branch %q is listed twice; running one workflow twice in parallel joins it against itself", where, branch)
+			}
+			seen[branch] = true
+		}
+		if len(s.Branches) == 1 {
+			report.warnf("%s: a parallel step with one branch is a composite step spelled the long way", where)
+		}
 	default:
-		report.errf("%s: unknown type %q (want \"leaf\" or \"composite\")", where, s.Type)
+		report.errf("%s: unknown type %q (want \"leaf\", \"composite\" or \"parallel\")", where, s.Type)
 	}
 }
 
@@ -247,11 +267,18 @@ func validateSubWorkflowAcyclic(report *Report, workflows []WorkflowSpec) {
 			if s.Type == "composite" && s.SubWorkflowRef != "" && known[s.SubWorkflowRef] {
 				edges[wf.WorkflowID] = append(edges[wf.WorkflowID], s.SubWorkflowRef)
 			}
+			if s.Type == "parallel" {
+				for _, branch := range s.Branches {
+					if branch != "" && known[branch] {
+						edges[wf.WorkflowID] = append(edges[wf.WorkflowID], branch)
+					}
+				}
+			}
 		}
 	}
 
 	if cycle := findCycle(order, edges); cycle != nil {
-		report.errf("sub_workflow_ref cycle: %s -- Engine.Run would recurse until the process dies of stack overflow",
+		report.errf("sub-workflow cycle: %s -- Engine.Run would recurse until the process dies of stack overflow",
 			strings.Join(cycle, " -> "))
 	}
 }
