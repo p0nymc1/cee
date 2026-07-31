@@ -1,5 +1,7 @@
 # 贡献指南 · Contributing to CEE
 
+> English: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
+
 欢迎贡献。CEE 的定位是一套"任何行业都能接进来"的开源协议，所以协作规则被刻意写死在文档里，而不是靠默契。这份指南告诉你**怎么开始**；具体的强制性红线在 [`docs/NORMATIVE_HANDBOOK.md`](docs/NORMATIVE_HANDBOOK.md)，动手细节在 [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md)。
 
 ## 两类贡献

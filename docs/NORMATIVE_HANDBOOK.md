@@ -1,5 +1,7 @@
 # CEE 规范性开发手册
 
+> English: [NORMATIVE_HANDBOOK.en.md](NORMATIVE_HANDBOOK.en.md)
+
 本手册是强制性规则，不是建议。区别在于：`DEVELOPMENT_GUIDE.md` 教你怎么做，本手册规定什么**不允许**做，以及为什么——因为 CEE 定位是任何行业都能接入的开源协议，规则必须写死在文档里被所有贡献者共同遵守，而不能靠"大家都懂行业惯例"这种默契。
 
 每条规则标注了违反后果，供 Code Review 时引用。

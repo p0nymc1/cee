@@ -1,17 +1,20 @@
 # CEE 开发文档
 
+> English: [DEVELOPMENT_GUIDE.en.md](DEVELOPMENT_GUIDE.en.md)
+
 面向"要在这个代码库上做开发"的人——无论是修改引擎本身，还是接入一个新的领域插件。架构原理见 `TECHNICAL_SPECIFICATION.md`，贡献规则见 `NORMATIVE_HANDBOOK.md`，本文档只讲"怎么动手"。
 
 ## 1. 环境要求
 
-- Go 1.22 及以上（`go.mod` 当前声明 `go 1.26.5`，跟随开发机实际工具链版本，向下兼容到 1.22 语法即可）
-- 无需任何外部依赖——`go.mod` 目前没有 `require` 条目，`go build`/`go test` 在无网络环境下也能跑
+- **Go 1.26 及以上**——`go.mod` 声明的是 `go 1.26.5`，自 Go 1.21 起这是硬下限，更低的工具链会拒绝构建（或按 `GOTOOLCHAIN` 自动下载 1.26，那就需要联网）
+- 无需任何外部依赖——`go.mod` 没有 `require` 条目，`go build`/`go test` 在无网络环境下也能跑（前提是本机 Go 已经 ≥ 1.26）
 
 ```bash
-go version        # 确认 >= 1.22
+go version        # 确认 >= 1.26
 go build ./...     # 编译全部包
 go vet ./...        # 静态检查
 go test ./... -v    # 跑全部测试
+make stats          # 打印文档引用的仓库数字
 ```
 
 ## 2. 项目结构
@@ -26,16 +29,28 @@ cee/
   sandbox/        预执行沙盒
   registry/       领域注册表（把插件接入 Router + Engine）
   manifest/       JSON 声明式加载器（Load 出 registry.Domain）+ 静态校验器（Validate）
-  stdlib/         标准动作库（std.set / std.require / std.rule_check）
+  stdlib/         标准动作库（std.set / std.require / std.rule_check / std.suspend / std.require_verified）
+  filestore/      落盘的 execution.Store 实现，挂起状态跨重启存活
+  llmhttp/        真实 LLM 后端：net/http 打 OpenAI 兼容端点，产出 llminjector.Extractor
+  embedhttp/      真实语义匹配后端：net/http 打 embedding 端点，产出 intentrouter.Vectorizer
+  replay/         录制/重放非确定性入口（探针 + 抽取），做规则变更的回归 diff
+  draft/          用模型起草 manifest，四道闸门校验
+  httpapi/        可挂载的 http.Handler，默认拒绝匿名
   scorecard/      度量一次请求：确定性步数 / LLM 调用 / 沙盒 / 断路器 / 耗时
   catalog/        社区分发层：index.json + plugins/<name>/manifest.json (+ benchmark.json)
   bench/          基准跑批：把标准事件跑过插件，聚合 Scorecard 并排名
-  cmd/cee/        命令行工具：validate / lint / list / install / bench
+  cmd/cee/        命令行工具：validate / lint / list / install / bench / draft / serve
   docs/           本文档所在目录
-  examples/
+  examples/       七个可运行范例，每个都跟仓库一起编译和测试
+    quickstart/            最小接入：退款台（放行 / 挂起等经理 / 探针拦下）
     security_monitoring/   L2 范例：Go 插件 + 沙盒门禁 + 断路器降级人工审批
-    manifests/             L1 范例：expense-guard.json，纯 JSON、零 Go 代码
-  tests/          Go 惯例是 *_test.go 跟源码同目录，这个顶层目录目前未使用
+    network_detection/     ATT&CK 匹配 + 处置爆炸半径护栏
+    crypto_surveillance/   实时行情异常监控（会联网）
+    human_approval/        L1 零 Go：挂起 / 恢复
+    meta_scenarios/        工单路由 / 调度 / 数据同步
+    local_netwatch/        本地连接筛查
+    manifests/             L1 范例：expense-guard.json 等，纯 JSON、零 Go 代码
+  satellites/     独立 go.mod 的卫星模块：dockersandbox / httpsandbox / wasmhooks
 ```
 
 包之间的依赖方向是单向的，不存在循环导入：

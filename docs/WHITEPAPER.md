@@ -1,5 +1,7 @@
 # 认知执行引擎（CEE）技术白皮书
 
+> English: [WHITEPAPER.en.md](WHITEPAPER.en.md)
+
 > 重塑智能体执行范式，从"概率试错"到"确定性工程"
 
 **本文档与代码同仓库、同版本管理。** 所有数字均可由 `go run ./cmd/cee bench` 或 CI 复现；所有"已建成"的说法都附有代码或测试链接。凡是尚未实测的指标，一律标注为**目标值**而不是成果——一份在立项时经不起追问的白皮书，比没有白皮书更糟。
@@ -12,7 +14,9 @@
 
 当前基于大语言模型的智能体，在长周期、高并发、成本敏感的企业场景中遭遇显著瓶颈。CEE（Cognitive Execution Engine）摒弃"依赖 LLM 全程决策"的范式，提出**意图确定性路由 + 边缘 LLM 注入 + 环境预演沙盒**的分层架构，把执行主控权交还给确定性状态机，LLM 降级为只做抽取、不做决策的边缘工具。
 
-与常见做法不同，CEE 不是把 Temporal、向量数据库、云沙盒粘在一起，而是**先把协议本身定死，再让每一层的后端可替换**。当前内核**零外部依赖**（`go.mod` 无任何 `require`），11807 行 Go，22 个包，221 个测试，`go build` 在断网环境下可完成。
+与常见做法不同，CEE 不是把 Temporal、向量数据库、云沙盒粘在一起，而是**先把协议本身定死，再让每一层的后端可替换**。当前内核**零外部依赖**（`go.mod` 无任何 `require`），10,213 行 Go，25 个包，220 个测试（另有 17 个卫星模块测试），核心包语句覆盖率 79–95%，`go build` 在装有 Go 1.26+ 的断网机器上可完成。
+
+> 本节数字由 `make stats` 生成，不手写——一份自己都对不上账的白皮书没有说服力。
 
 ---
 
@@ -58,7 +62,8 @@ CEE 把这一点当作一等公民：**执行前预演，而不是执行后反�
 |---|---|---|
 | `intentrouter.Vectorizer` | 词汇 Jaccard（零依赖） | 任意 OpenAI 兼容 embedding 端点（[`embedhttp`](../embedhttp/embedhttp.go)）、向量数据库 |
 | `llminjector.Extractor` | 领域自注册函数 | 任意 OpenAI 兼容 chat 端点（[`llmhttp`](../llmhttp/llmhttp.go)） |
-| `execution.Prober` | 进程内调用 | 容器（[`satellites/dockersandbox`](../satellites/dockersandbox)）、WASM（[`satellites/wasmhooks`](../satellites/wasmhooks)）、E2B 等 |
+| `execution.Prober` | 进程内调用 | 本地容器（[`satellites/dockersandbox`](../satellites/dockersandbox)）、远程/云沙盒（[`satellites/httpsandbox`](../satellites/httpsandbox)）、E2B 等 |
+| `execution.Action` | 领域 Go hook | WASM 沙箱（[`satellites/wasmhooks`](../satellites/wasmhooks)），用于不可信第三方代码 |
 | `execution.Store` | 内存 | 落盘（[`filestore`](../filestore/filestore.go)）、数据库 |
 
 **规范手册 1.5 条**规定：核心模块只允许依赖标准库，任何需要重型 SDK 的实现必须放进带独立 `go.mod` 的卫星模块。`go build ./...` 不会下降到卫星目录，因此卫星的依赖**在物理上到不了核心**。
@@ -186,7 +191,7 @@ CLI 只打印、不存盘：草稿是提案，把模型挪到设计时的全部�
 | 度量与基准排行榜 | `scorecard` / `bench` / `cee bench` |
 | 社区插件目录 | `catalog` / `cee list`·`lint`·`install` |
 | 真实模型后端（零依赖） | `llmhttp` / `embedhttp` |
-| 卫星模块样板 | `satellites/dockersandbox`、`satellites/wasmhooks` |
+| 卫星模块样板 | `satellites/dockersandbox`、`satellites/httpsandbox`、`satellites/wasmhooks` |
 
 六类元场景均已落地为可运行示例：安全监测、审批流、工单路由、调度、数据同步、异常监控（另含网络入侵检测与虚拟货币市场监控两个真实案例）。
 
@@ -194,10 +199,17 @@ CLI 只打印、不存盘：草稿是提案，把模型挪到设计时的全部�
 
 1. **真实身份源接入**：`httpapi` 已提供 `Identify` 钩子并默认拒绝未配置的部署，引擎侧授权也已就位（audience + `Authorizer`，默认拒绝、拒绝不消耗指针、批准者记入 `cee.resumed_by`）。缺的是**把它接到真实的 JWT / mTLS / 会话**上——这属于接入方，但缺一份参考实现。
 2. **起草链路的真实模型验证**：`draft` 的逻辑与四道闸门已全部测试（用桩，不联网），但"模型第一次能不能写对"尚未用真实端点实测。
-3. **可视化编排**：`cee draft` 已提供自然语言入口，拖拽界面仍缺；底层是纯 JSON 且可静态校验，前端可后补。
-5. **并行与汇合**：引擎目前无 fan-out/fan-in 原语。
-6. **挂起超时与升级**：等待没有尽头，缺 TTL 与超时转派。
-7. **诊断性度量**：`scorecard` 量的是产出（确定性步数、消除的调用数），未量误差（意图未命中率、探针拒绝率、转人工比例）。**只量好看的数字是一种概念偏向。**
+3. **并行与汇合**：引擎目前无 fan-out/fan-in 原语。这一条被排在前面是因为它不只是缺一个功能：真实企业流程大量含并行分支，缺了它，这类流程只能掉到 L2 Go hook 里手写——而那恰好绕过了无代码贡献层，也就是绕过了社区飞轮的前提。
+4. **挂起超时与升级**：等待没有尽头，缺 TTL 与超时转派。与上一条同理，「等三天没人批就升级」是审批流的常规要求，目前表达不了。
+5. **注册路径的并发安全**：`Engine` 的 workflow / policy 注册表是裸 map，无锁，因此只支持启动期注册。今天是安全的，但「运行时热加载 L1 manifest」——README 里"L1 插件可当数据分发"所指向的下一步——会直接与并发 `Run` 竞争。做插件热分发之前必须先补这把锁。
+6. **诊断性度量**：`scorecard` 量的是产出（确定性步数、消除的调用数），未量误差（意图未命中率、探针拒绝率、转人工比例）。**只量好看的数字是一种概念偏向。**
+7. **可视化编排**：`cee draft` 已提供自然语言入口，拖拽界面仍缺；底层是纯 JSON 且可静态校验，前端可后补。
+
+### 4.3 最大的风险不在代码里
+
+上面七条都是工程问题，都有解法。真正的风险是另一件事：**catalog 里目前只有 2 个插件，都是作者自己写的样例，`cee bench` 排行榜上没有第三方。** 无代码贡献层、标准动作库、分发目录、确定性排行榜——整套社区飞轮**架构已就绪，燃料为零**。
+
+协议靠采纳赢，不靠质量赢。当前产物的工程质量大幅领先于它的分发，而这个差距不会自己收敛。
 
 ---
 

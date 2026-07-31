@@ -1,5 +1,7 @@
 # CEE — Cognitive Execution Engine
 
+> English: [README.en.md](README.en.md)
+
 > 认知执行引擎：把智能体从"概率试错"拉回"确定性工程"。
 > A business-agnostic protocol for deterministic-first agent execution, where the LLM is an edge tool — not the driver.
 
@@ -101,13 +103,15 @@ sb.RegisterProbe("refund.account_open", func(ctx map[string]any) (bool, string, 
 
 ### 现在还缺的
 
-- **没有现成的服务形态**，要 HTTP API 得自己写。
-- **恢复指针是无记名凭证**：谁拿到 `StatePointer` 谁就能批准那笔操作，引擎侧没有认证授权。进程内传没问题，放进 URL 之前必须先设计权限模型。
+- **没有并行原语**：引擎没有 fan-out / fan-in，含并行分支的流程目前只能拆成串行，或掉到 L2 Go hook 里自己写。
+- **挂起没有尽头**：缺 TTL 与超时转派，等不到人的审批会一直挂着。
+- **身份源要自己接**：`httpapi` 提供 `Identify` 钩子、引擎侧的 audience + `Authorizer` 授权已就位（默认拒绝、拒绝不消耗指针），但把它接到真实 JWT / mTLS / 会话上是接入方的事，仓库里还没有参考实现。
+- **注册不是并发安全的**：`Engine` 的 workflow 与 policy 注册表是裸 map，只支持启动期注册。运行中热加载 L1 manifest 会与并发 `Run` 竞争——这是要做插件热分发之前必须先补的锁。
 - **L2 插件不能热加载**：需要 Go hook 的插件要编译进你的二进制，改了得重新发版；只有纯 JSON 的 L1 插件能当数据分发。
 
 ## 本地跑起来看看
 
-需要 Go 1.22+（仓库按 1.26 工具链开发，语法向下兼容到 1.22）。
+需要 **Go 1.26+**——`go.mod` 声明的是 `go 1.26.5`，这是硬下限，更低的工具链会拒绝构建（或按 `GOTOOLCHAIN` 自动下载 1.26，那就需要联网）。想在完全断网的机器上构建，请先确认本机 Go ≥ 1.26。
 
 ```bash
 go build ./... && go vet ./... && go test ./...
@@ -122,7 +126,42 @@ go run ./examples/meta_scenarios         # 工单路由 / 调度 / 数据同步
 
 每个示例的真实输出都在 **https://p0nymc1.github.io/cee/** 上，由 CI 每小时重跑生成——不是手写的。
 
+## 安装（把 cee 装成系统命令）
+
+一键安装 `cee` 命令行工具（二选一，都只用 Go 工具链）：
+
+```bash
+make install     # 或者：
+./install.sh
+```
+
+两者都是 `go install ./cmd/cee`，把二进制装到你的 Go bin（`GOBIN`，或 `GOPATH/bin`）。如果那个目录不在 `PATH` 里，脚本会打印需要加的那一行。装好后就能直接 `cee ...` 而不用 `go run`。
+
+其他常用 `make` 目标：
+
+| 目标 | 作用 |
+|---|---|
+| `make build` | 产物到 `./bin/cee` |
+| `make test` | 核心 + 卫星全测 |
+| `make lint` | gofmt + vet + catalog 校验 |
+| `make bench` | 插件确定性排行榜 |
+| `make serve MANIFEST=<路径> ADDR=<host:port>` | 本地起 HTTP 试跑一份 manifest（默认 sla-guard；仅 loopback、无认证、内存态） |
+| `make draft DESC="<描述>"` | 用模型起草一份 workflow（需 `CEE_LLM_BASE_URL`/`CEE_LLM_MODEL` 环境变量） |
+| `make stats` | 打印文档里引用的仓库数字（行数/包数/测试数/依赖数），文档不手写数字 |
+| `make uninstall` / `make clean` | 卸载 / 清理产物 |
+
+`make` 无参数列出全部目标。`make serve` 起来后可以直接 curl：
+
+```bash
+make serve ADDR=127.0.0.1:8899 &
+curl -s http://127.0.0.1:8899/v1/run \
+  -d '{"workflow":"sla-guard.evaluate","context":{"response_minutes":30}}'
+# -> {"status":"completed","output":{"sla_met":true,...},"trace":["check_response_time","within_sla"]}
+```
+
 ## 命令行工具
+
+装好后把下面的 `go run ./cmd/cee` 换成 `cee` 即可；未安装时也能直接 `go run`：
 
 ```bash
 go run ./cmd/cee validate <manifest.json>   # 静态校验单个 manifest（CI 门禁）
@@ -168,12 +207,17 @@ sandbox/         预执行沙盒
 registry/        领域注册表
 stdlib/          标准动作库（无代码贡献层的地基）
 manifest/        JSON 声明式加载器 + 静态校验器
+replay/          录制与重放：改一条规则，算出哪些历史决定会翻转
+draft/           用模型起草 manifest（设计时推理一次，四道闸门把关）
+httpapi/         可挂载的 http.Handler（默认拒绝匿名；恢复指针只走 body，不进 URL）
 scorecard/       单次请求度量（vs 朴素 Agent 基线）
 bench/           基准跑批 + 排行榜
 catalog/         社区分发层（index.json + plugins/），自带两个 L1 样例
 cmd/cee/         命令行工具
-examples/        可运行范例（security_monitoring、human_approval）
-satellites/      可选卫星 module（各自独立 go.mod）：dockersandbox（真实沙盒）、wasmhooks（不可信代码信任边界）
+examples/        七个可运行范例（quickstart / network_detection / crypto_surveillance /
+                 human_approval / meta_scenarios / security_monitoring / local_netwatch）
+satellites/      可选卫星 module（各自独立 go.mod）：dockersandbox（本地容器沙盒）、
+                 httpsandbox（远程/云沙盒）、wasmhooks（不可信代码信任边界）
 docs/            技术说明书 / 开发文档 / 规范性开发手册
 ```
 
@@ -189,17 +233,21 @@ docs/            技术说明书 / 开发文档 / 规范性开发手册
 
 需要重型后端（容器运行时、E2B SDK、WASM 运行时）的组件，**不进主库**——它们住在 `satellites/` 下、各自有独立的 `go.mod`。因为 `go build ./...` 不会进入带自己 `go.mod` 的子目录，这些依赖永远到不了核心；主库的 `go.mod` 保持零 `require`。卫星通过和内置实现**完全相同的接口**插进引擎，所以引擎一行不改。
 
-两个已落地的卫星，各插入引擎的**不同**扩展点，证明这个模式能推广：
+三个已落地的卫星，覆盖两个**不同**的扩展点，证明这个模式能推广：
 
-- **`satellites/dockersandbox`**（实现 `execution.Prober`）：真实预执行沙盒，把候选命令丢进一次性、无网络的 Docker 容器里预演，退出码非零就判不健康、由断路器接管。`TestSatellitePlugsIntoTheEngineUnchanged` 证明它无缝当引擎的沙盒。
+- **`satellites/dockersandbox`**（实现 `execution.Prober`）：本地容器预执行沙盒，把候选命令丢进一次性、无网络的 Docker 容器里预演，退出码非零就判不健康、由断路器接管。`TestSatellitePlugsIntoTheEngineUnchanged` 证明它无缝当引擎的沙盒。
+- **`satellites/httpsandbox`**（实现 `execution.Prober`）：同一个接口的**远程/云**形态，把预演请求打到一个 HTTP 沙盒服务（E2B、Modal，或你自己的 runner）。宿主机不需要容器运行时，只需要网络。
 - **`satellites/wasmhooks`**（实现 `execution.Action`，即 manifest Hook）：**不可信第三方代码的信任边界**。让插件行为是一段 WebAssembly，只能拿到 step context 的 JSON、只能返回 JSON，碰不到宿主的文件系统/网络/内存。信任边界契约、引擎集成、超时护栏、以及"不可信模块支撑真实 manifest step"的端到端路径全部离线测通；真正执行 wasm 字节码的 `Runtime`（用 wazero，纯 Go）是唯一需要联网 vendor 的一小块，说明见该目录 README。
+
+`dockersandbox` 和 `httpsandbox` 实现的是同一个 `Prober` 接口——本地容器和云沙盒对引擎完全等价，换后端不改一行引擎代码。这正是"先定协议，再选后端"要兑现的东西。
 
 ```bash
 cd satellites/dockersandbox && go test ./...   # 每个卫星独立构建、独立测试
+cd satellites/httpsandbox   && go test ./...
 cd satellites/wasmhooks     && go test ./...
 ```
 
-这两个卫星本身的依赖（若有）都住在各自的 `go.mod` 里，核心 `go.mod` 永远零 `require`。E2B/云沙盒等更多后端照同一样板往 `satellites/` 里加即可。
+这些卫星本身的依赖（若有）都住在各自的 `go.mod` 里，核心 `go.mod` 永远零 `require`。更多后端照同一样板往 `satellites/` 里加即可。
 
 ## License
 

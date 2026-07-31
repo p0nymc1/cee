@@ -1,5 +1,7 @@
 # CEE 技术说明书
 
+> English: [TECHNICAL_SPECIFICATION.en.md](TECHNICAL_SPECIFICATION.en.md)
+
 版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 八个库包，外加 `cmd/cee` 命令行工具）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 10 节）。
 
 ## 1. 产品定位
@@ -459,11 +461,16 @@ rank plugin           determinism  events   errors   LLM calls eliminated vs age
 以下内容**尚未实现**，属于路线图但不在当前代码里，避免与实际状态混淆：
 
 - **Agent 兜底层**：此前讨论过"LLM 抽取连续失败后转受限 Agent 兜底"的两级升级机制，已明确决定不做，当前抽取失败直接由调用方决定下一步（通常是转人工），引擎本身不内置这一层。
-- **真实后端**：`intentrouter` 的向量检索、`execution` 的分布式/持久化状态存储、`sandbox` 的进程隔离、`llminjector` 的真实 LLM 调用，目前都是本地内存态的最小实现，用于验证协议本身，尚未接入 Qdrant / Temporal / E2B / 任何 LLM API。
-- **场景模板库**：白皮书里讨论过的六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）中，目前只落地了两个样例——`examples/security_monitoring`（安全监测，L2 有代码路径）和 `examples/manifests/expense-guard.json`（审批流，L1 无代码路径）。其余四类尚未成形，也还没有把它们抽象成可复用模板包。
+- **真实后端**：**这一条已大部分兑现，仅沙盒的内置实现仍是进程内模拟**。`llminjector` 可挂 `llmhttp`（真实 OpenAI 兼容端点）、`intentrouter` 可挂 `embedhttp`（真实 embedding 语义匹配）、`execution.Store` 可挂 `filestore`（落盘、跨重启存活）、`execution.Prober` 可挂 `satellites/dockersandbox`（本地容器）或 `satellites/httpsandbox`（远程/云沙盒）。核心内置的 `sandbox.Sandbox` 仍是进程内直接调用，用于开发与测试。分布式编排（Temporal 类语义）**明确不做**，见第 6 章适用边界。
+- **场景模板库**：六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）**均已落地为可运行示例**（见 `examples/`），另含两个真实案例（网络入侵检测、市场异常监控）。**尚未做的是把它们抽象成可复用的模板包**——目前每个都是独立示例，新接入者要照着改，而不是填参数。
+- **并行与汇合**：引擎没有 fan-out / fan-in 原语，Step 只有一条 `on_success` 出边。含并行分支的流程只能串行化，或掉到 L2 Go Hook 里自己并发。
+- **挂起没有 TTL 与超时转派**：等待没有尽头，见下面 `filestore` 那条。
+- **注册路径不是并发安全的**：`Engine` 的 `workflows` / `policies` 是裸 map，无锁，因此只支持**启动期注册**。当前所有调用方都在启动期注册完再开始服务，所以是安全的；但运行时热加载 L1 manifest 会与并发 `Run` 竞争。做插件热分发之前必须先补锁。
 - **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
 - **`filestore` 没有过期回收**：挂起的流程会一直躺在目录里。一个永远等不到审批的流程不会自己消失，也没有 TTL 或归档机制——运维得自己拿 `Pending()` 做清理。
 - **`filestore` 不做跨进程加锁**，但**"一次性"保证本身是跨进程成立的**——见 5.7，它靠的是 `rename`/`unlink` 的原子性，不需要锁。缺的是公平性（谁先到谁拿到），以及"孤儿要靠人来判"（见 5.8，这是刻意的，不是遗漏）。
 - **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
-- **标准动作库的覆盖面**：`stdlib` 目前只有 `set`/`require`/`rule_check` 三个动作，够表达"阈值判断 + 打标"这类流程，但没有任何 I/O 类动作（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
-- **Scorecard 的 token 维度**：`scorecard` 目前度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实；但它**还没有真实的 token 消耗数**（注入器尚未接真实 LLM），也**还没有内建的 Agent 对照组跑批**——排行榜、基准套件都还是路线图,不在当前代码里。
+- **标准动作库的覆盖面**：`stdlib` 目前有 `set`/`require`/`rule_check`/`suspend`/`require_verified` 五个动作，够表达"阈值判断 + 打标 + 等人 + 拒绝猜测值"这类流程，但**没有任何 I/O 类动作**（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
+- **Scorecard 的 token 维度**：`scorecard` 度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实。排行榜与基准套件**已经落地**（`bench` 包 + `cee bench`），但两件事仍然没有：**真实的 token 消耗数**，以及**Agent 实跑对照组**。因此"省了多少钱"这个问题目前只能用调用次数回答，不能用金额回答。
+- **只量产出，未量误差**：`scorecard` 量的是确定性步数、消除的调用数——都是好看的数字。意图未命中率、探针拒绝率、转人工比例这些**诊断性**指标一个都没有。只量好看的数字是一种概念偏向，这条要当作已知缺陷而不是"以后再说"。
+- **生态**：`catalog` 里目前只有 2 个插件，都是仓库自带的样例，`cee bench` 排行榜上没有第三方条目。无代码贡献层、分发目录、确定性排行榜这套飞轮**架构已就绪，燃料为零**。
