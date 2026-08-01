@@ -21,3 +21,14 @@
 
 # Local screening policy is private configuration, not committed
 /netwatch.json
+
+# Stray example binaries a bare `go build ./examples/<x>/` drops in the repo root
+/rule_change
+/code_audit
+/quickstart
+/network_detection
+/security_monitoring
+/human_approval
+/meta_scenarios
+/crypto_surveillance
+/local_netwatch

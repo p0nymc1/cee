@@ -1,0 +1,75 @@
+{
+  "name": "codeaudit",
+  "intents": [
+    {
+      "node_id": "codeaudit.review_finding",
+      "examples": [
+        "review this code finding in the pull request",
+        "audit this pull request change for security issues",
+        "triage this static analysis finding",
+        "check this scanner result on the diff"
+      ],
+      "entry_workflow_ref": "codeaudit.triage"
+    }
+  ],
+  "policies": [
+    {"policy_id": "to_human", "fallback_step_ref": "hold_for_human"},
+    {"policy_id": "route_to_gate", "fallback_step_ref": "require_verified_severity"}
+  ],
+  "workflows": [
+    {
+      "workflow_id": "codeaudit.triage",
+      "entry_step_id": "classify",
+      "steps": [
+        {
+          "step_id": "classify",
+          "type": "leaf",
+          "action_ref": "codeaudit.classify",
+          "on_success": "require_confidence"
+        },
+        {
+          "step_id": "require_confidence",
+          "type": "leaf",
+          "action_ref": "std.require",
+          "with": {"field": "finding_confidence", "op": "gte", "value": 0.6},
+          "circuit_breaker_policy_ref": "to_human",
+          "on_success": "check_needs_gate"
+        },
+        {
+          "step_id": "check_needs_gate",
+          "type": "leaf",
+          "action_ref": "std.require",
+          "with": {"field": "needs_gate", "op": "eq", "value": false},
+          "circuit_breaker_policy_ref": "route_to_gate",
+          "on_success": "post_comment"
+        },
+        {
+          "step_id": "require_verified_severity",
+          "type": "leaf",
+          "action_ref": "std.require_verified",
+          "with": {"fields": ["severity"]},
+          "circuit_breaker_policy_ref": "to_human",
+          "on_success": "apply_gate"
+        },
+        {
+          "step_id": "apply_gate",
+          "type": "leaf",
+          "action_ref": "codeaudit.apply_gate",
+          "sandbox_probe_ref": "codeaudit.assess_action_blast_radius",
+          "circuit_breaker_policy_ref": "to_human"
+        },
+        {
+          "step_id": "post_comment",
+          "type": "leaf",
+          "action_ref": "codeaudit.post_comment"
+        },
+        {
+          "step_id": "hold_for_human",
+          "type": "leaf",
+          "action_ref": "std.set",
+          "with": {"fields": {"disposition": "held_for_human_review"}}
+        }
+      ]
+    }
+  ]
+}

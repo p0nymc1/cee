@@ -193,6 +193,14 @@ check, so an account that was closed at the time stays closed, and the rule is t
 that moved.`,
 		"rule_change"},
 
+	{"Code audit — an AI PR reviewer, re-cast",
+		`The loop CodeRabbit, GitHub Copilot code review and Qodo PR-Agent run — find an issue and decide what to do
+about it — with the decision taken back from the model. The model only extracts a finding into structured fields,
+stamped model-derived; a deterministic workflow classifies severity and refuses to auto-block on a guessed one. A
+sandbox probe rehearses the action first, so blocking the hotfix that ends an incident, or autofixing generated code,
+routes to a human instead of executing. The final line is the error side of the batch: intent miss, probe refusal.`,
+		"code_audit"},
+
 	{"Crypto market surveillance — live data",
 		`Fixed thresholds over live quotes, swept hourly. This is anomaly flagging, not investment
 advice: every rule is a constant in a manifest or in deterministic Go, and no model is asked

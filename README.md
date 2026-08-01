@@ -69,6 +69,7 @@ go get github.com/p0nymc1/cee@v0.1.0
 
 ```bash
 go run ./examples/rule_change            # replay past decisions against a changed rule; report which flip
+go run ./examples/code_audit             # AI PR-review agent re-cast: extract-only model + verified-severity + blast-radius gate
 go run ./examples/quickstart             # refund desk
 go run ./examples/network_detection      # ATT&CK matching + blast-radius guardrails
 go run ./examples/security_monitoring    # probe gating + scorecard + aggregate diagnostics
@@ -154,7 +155,7 @@ diagnostics/     cross-run error metrics (intent miss / probe refusal / escalati
 bench/           benchmark batches + leaderboard
 catalog/         community distribution (index.json + plugins/)
 cmd/cee/         command-line tool
-examples/        eight runnable examples, compiled and tested with the repo
+examples/        nine runnable examples, compiled and tested with the repo
 satellites/      optional modules, each own go.mod: dockersandbox / httpsandbox / wasmhooks
 docs/            specification / development guide / normative handbook
 ```

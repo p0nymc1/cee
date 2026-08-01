@@ -45,9 +45,10 @@ cee/
   bench/          benchmark batches: run standard events through plugins, aggregate Scorecards, rank
   cmd/cee/        CLI: validate / lint / list / install / bench / draft / serve
   docs/           this document's directory
-  examples/       eight runnable examples, all compiled and tested with the repo
+  examples/       nine runnable examples, all compiled and tested with the repo
     quickstart/            minimal integration: a refund desk (pay / park for a manager / blocked by a probe)
     rule_change/           change one rule, replay past decisions, compute which flip
+    code_audit/            AI PR-review agent re-cast: extract-only model + verified severity + blast-radius gate
     security_monitoring/   L2 example: Go plugin + sandbox gating + breaker escalation to human review
     network_detection/     ATT&CK matching + blast-radius guardrails on containment
     crypto_surveillance/   live market anomaly monitoring (uses the network)

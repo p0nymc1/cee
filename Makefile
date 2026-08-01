@@ -74,7 +74,7 @@ stats: ## Print the repo figures the docs quote, so they can never drift uncheck
 
 site: ## Build the published site into ./site (runs the examples first)
 	@mkdir -p demo-output $(BIN_DIR)
-	@for ex in rule_change crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do \
+	@for ex in rule_change code_audit crypto_surveillance network_detection security_monitoring human_approval meta_scenarios; do \
 		printf 'running %s\n' "$$ex"; \
 		go run "./examples/$$ex" > "demo-output/$$ex.txt" 2>&1 || true; \
 	done
