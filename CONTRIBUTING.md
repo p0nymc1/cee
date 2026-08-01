@@ -1,82 +1,104 @@
-# 贡献指南 · Contributing to CEE
+# Contributing to CEE
 
-> English: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
+Contributions are welcome. CEE is positioned as an open protocol any industry can plug into, so the collaboration
+rules are deliberately written down rather than left to shared assumption. This guide tells you **how to start**; the
+mandatory red lines are in [`docs/NORMATIVE_HANDBOOK.md`](docs/NORMATIVE_HANDBOOK.md), and the hands-on detail is
+in [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md).
 
-欢迎贡献。CEE 的定位是一套"任何行业都能接进来"的开源协议，所以协作规则被刻意写死在文档里，而不是靠默契。这份指南告诉你**怎么开始**；具体的强制性红线在 [`docs/NORMATIVE_HANDBOOK.md`](docs/NORMATIVE_HANDBOOK.md)，动手细节在 [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md)。
+## Two kinds of contribution
 
-## 两类贡献
+**A. Contribute a domain plugin** (the most common, and the most welcome) — you don't need to change the engine, only
+describe your process.
 
-**A. 贡献一个领域插件**（最常见，也最欢迎）——你不需要改引擎，只需描述你的流程。
+**B. Improve the engine itself** — the business-agnostic core packages `entities` / `execution` / `intentrouter` /
+`llminjector` / `sandbox` / `registry` / `manifest` / `stdlib`. The bar is higher here, because they are the contract
+every plugin depends on.
 
-**B. 改进引擎本身**——`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 这些跟业务无关的核心包。门槛更高，因为它们是所有插件共同依赖的契约。
-
-## 开始之前
+## Before you start
 
 ```bash
-go build ./... && go vet ./... && go test ./...   # 三者必须全绿
+go build ./... && go vet ./... && go test ./...   # all three must be green
 ```
 
-仓库**零外部依赖**是有意为之——`go.mod` 目前没有任何 `require`。新增依赖需要在 PR 里单独说明理由，不能顺带引入。
+Requires **Go 1.26+** (`go.mod` declares `go 1.26.5`, which is a hard floor).
 
-## A. 贡献一个插件
+The repo having **zero external dependencies** is deliberate — `go.mod` has no `require` entries. A new dependency
+needs its own justification in the PR description and may not be slipped in alongside other work.
 
-### L1：无代码（纯 JSON）
+## A. Contributing a plugin
 
-如果你的流程能用标准动作库（`std.set` / `std.require` / `std.rule_check` / `std.suspend`）表达，就完全不用写 Go：
+### L1: no code (pure JSON)
 
-1. 在 `catalog/plugins/<你的插件名>/manifest.json` 写你的 manifest（结构参考 `catalog/plugins/sla-guard/manifest.json`）。
-2. 用校验器自查——这是准入闸门，过不了别提 PR：
+If your process can be expressed with the standard action library (`std.set` / `std.require` / `std.rule_check` /
+`std.suspend` / `std.require_verified`), you don't need to write Go at all:
+
+1. Write your manifest at `catalog/plugins/<your-plugin-name>/manifest.json` (see
+   `catalog/plugins/sla-guard/manifest.json` for the structure).
+2. Check it yourself with the validator — this is the admission gate; don't open a PR that fails it:
    ```bash
-   go run ./cmd/cee validate catalog/plugins/<名字>/manifest.json
+   go run ./cmd/cee validate catalog/plugins/<name>/manifest.json
    ```
-3. 在 `catalog/index.json` 加一条 entry（`name` / `tier: "L1"` / `version` / `domain` / `manifest` 路径）。
-4. 整体校验 catalog：
+3. Add an entry to `catalog/index.json` (`name` / `tier: "L1"` / `version` / `domain` / `manifest` path).
+4. Validate the catalog as a whole:
    ```bash
-   go run ./cmd/cee lint      # 必须 ok: no issues
+   go run ./cmd/cee lint      # must print ok: no issues
    ```
-5.（可选，但推荐）加一份 `benchmark.json` 标准事件集并在 entry 里加 `benchmark` 字段，让你的插件上排行榜：
+5. (Optional but recommended) Add a `benchmark.json` standard event set and a `benchmark` field in your entry, so your
+   plugin appears on the leaderboard:
    ```bash
    go run ./cmd/cee bench
    ```
 
-分支怎么写：引擎没有 if/else，用 `std.require`——条件成立走 `on_success`，不成立则失败、经 `circuit_breaker_policy_ref` 路由到 fallback step。要"挂起等人工/回调"用 `std.suspend`。
+How to write a branch: the engine has no if/else. Use `std.require` — the condition holding takes `on_success`, and it
+not holding fails the step, which `circuit_breaker_policy_ref` routes to a fallback step. To "park and wait for a human
+or a callback," use `std.suspend`.
 
-### L2：有代码（manifest + Go Hooks）
+### L2: with code (manifest + Go hooks)
 
-标准动作表达不了的逻辑（比如要碰外部系统），把 `action_ref` 指向一个具名 Go 函数（`manifest.Hooks`）。L2 插件走 Go module 分发，不通过 catalog 的 `install`，但可以在 index 里用 `tier: "L2"` 登记以便被发现。写法见开发文档第 3 节。
+For logic the standard actions cannot express (touching an external system, say), point `action_ref` at a named Go
+function (`manifest.Hooks`). L2 plugins are distributed as Go modules rather than through the catalog's `install`, but
+can be registered in the index with `tier: "L2"` so they are discoverable. See section 3 of the development guide.
 
-## B. 改进引擎
+## B. Improving the engine
 
-改核心包前，先读 [`docs/NORMATIVE_HANDBOOK.md`](docs/NORMATIVE_HANDBOOK.md) 第 1 节的四条架构红线。**违反即拒绝合并**，概括：
+Before changing a core package, read the four architectural red lines in section 1 of
+[`docs/NORMATIVE_HANDBOOK.md`](docs/NORMATIVE_HANDBOOK.md). **Violation means the merge is rejected.** In
+summary:
 
-1. **LLM 只能抽取，不能决策**——`Schema` 里不允许出现 `is_fraud`/`should_alert` 这类判断性字段。
-2. **沙盒探针只读**——不允许有任何真实副作用。
-3. **断路器走命名策略**——不允许在 Action 里手写重试循环。
-4. **引擎包不含行业逻辑**——不允许出现 `if domainID == "finance"` 这类分支；`stdlib` 的动作名和参数里不能有行业名词。
+1. **The LLM may extract, never decide** — judgement fields like `is_fraud`/`should_alert` are not allowed in a
+   `Schema`.
+2. **Sandbox probes are read-only** — no real side effects, ever.
+3. **Circuit breakers go through named policies** — no hand-written retry loops inside an action.
+4. **No industry logic in engine packages** — no `if domainID == "finance"` branches, and no industry nouns in
+   `stdlib` action names or parameters.
 
-守护测试：`registry/registry_test.go` 的 `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` 用两个词汇完全不重叠的领域验证"引擎不含行业逻辑"。你的改动之后它必须仍然通过，且你没有为了让它过而往引擎里加特殊分支。
+The guard test: `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` in `registry/registry_test.go` verifies "the
+engine contains no industry logic" using two domains with entirely non-overlapping vocabularies. After your change it
+must still pass, and you must not have added a special-case branch to the engine to make it pass.
 
-## PR 检查清单
+## PR checklist
 
-提交前逐条自查（完整版在规范手册第 4 节）：
+Self-check each item before submitting (the full version is in section 4 of the normative handbook):
 
-- [ ] `go build ./...` / `go vet ./...` / `go test ./...` 全绿，`gofmt` 干净。
-- [ ] 新增插件：`cee validate` 通过；进 catalog 的话 `cee lint` 干净。
-- [ ] 碰了引擎核心包：四条红线都守住，双域守护测试仍过。
-- [ ] 新路径补了测试：至少一条成功路径 + 一条失败/未注册引用路径。
-- [ ] 命名遵循规范手册第 2 节（`NodeID`/`WorkflowID`/`PolicyID`/`*_ref` 的域前缀约定）。
-- [ ] 没有顺带引入外部依赖（如需引入，PR 描述里单独说明）。
+- [ ] `go build ./...` / `go vet ./...` / `go test ./...` all green, `gofmt` clean.
+- [ ] New plugin: passes `cee validate`; if it goes into the catalog, `cee lint` is clean.
+- [ ] Touched an engine core package: all four red lines held, and the two-domain guard test still passes.
+- [ ] New paths have tests: at least one success path plus one failure/unregistered-reference path.
+- [ ] Naming follows section 2 of the normative handbook (the domain-prefix conventions for
+      `NodeID`/`WorkflowID`/`PolicyID`/`*_ref`).
+- [ ] No external dependency slipped in (if one is needed, justify it separately in the PR description).
 
-## 代码风格
+## Code style
 
-- Go 官方风格，提交前跑 `gofmt -w`。
-- 测试用标准库 `testing` + `errors.As`/`errors.Is`，不引第三方断言库。
-- 错误处理用原生 `error`；`panic` 只用于真正的编程错误。
+- Official Go style; run `gofmt -w` before committing.
+- Tests use the standard library `testing` plus `errors.As`/`errors.Is`; no third-party assertion libraries.
+- Error handling uses native `error`; `panic` is only for genuine programming errors.
 
-## 行为准则
+## Code of conduct
 
-对人友善，对事严格。评审针对代码不针对人；分歧用测试和数据说话。
+Kind to people, strict about the work. Reviews address code, not people; disagreements are settled with tests and
+data.
 
 ## License
 
-提交贡献即表示你同意以本项目的 [Apache License 2.0](LICENSE) 授权你的贡献。
+By submitting a contribution you agree to license it under this project's [Apache License 2.0](LICENSE).

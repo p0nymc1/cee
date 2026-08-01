@@ -1,114 +1,190 @@
-# CEE 规范性开发手册
+# CEE Normative Development Handbook
 
-> English: [NORMATIVE_HANDBOOK.en.md](NORMATIVE_HANDBOOK.en.md)
+This handbook contains mandatory rules, not suggestions. The distinction: `DEVELOPMENT_GUIDE.md` teaches you how to
+do things; this handbook specifies what is **not allowed**, and why. Because CEE is positioned as an open protocol any
+industry can plug into, the rules must be written down and jointly enforced by all contributors — they cannot rest on
+an unspoken assumption that "everyone knows the industry conventions."
 
-本手册是强制性规则，不是建议。区别在于：`DEVELOPMENT_GUIDE.md` 教你怎么做，本手册规定什么**不允许**做，以及为什么——因为 CEE 定位是任何行业都能接入的开源协议，规则必须写死在文档里被所有贡献者共同遵守，而不能靠"大家都懂行业惯例"这种默契。
+Each rule states the consequence of violating it, so it can be cited during code review.
 
-每条规则标注了违反后果，供 Code Review 时引用。
+## 1. Architectural red lines (violation = merge rejected)
 
-## 1. 架构红线（违反即拒绝合并）
+### 1.1 The LLM may extract, never decide
 
-### 1.1 LLM 只能抽取，不能决策
+The return value of `llminjector.Extractor` may contain only **factual fields pulled from the source text** (amount,
+date, entity name, …). It **must not contain any field of the form "what should happen next"** (is it anomalous,
+should it be approved, severity level, …).
 
-`llminjector.Extractor` 的返回值只允许包含"从原文里抽出来的事实性字段"（金额、日期、实体名称……），**不允许包含任何"下一步该怎么办"性质的字段**（是否异常、是否放行、严重等级……）。
+- **Why**: this is the core boundary separating CEE from a "fully autonomous LLM agent." The moment decision authority
+  leaks into the extraction result, the deterministic execution engine degenerates into "the LLM decides and the code
+  is a shell."
+- **Enforcement**: `Injector.Extract` copies only the fields declared in `Schema` into `StructuredPayload`; anything
+  outside the schema is silently dropped (see the `clean` construction in `injector.go`). **This rule is therefore
+  enforced in practice by "do not declare decision fields in the Schema."** During code review, a `Schema` containing
+  field names like `is_valid`, `should_alert`, or `severity_level` must be rejected.
+- Shape of a legal field name: nominal, verifiable directly against the source text (`amount`, `merchant_name`,
+  `invoice_id`). Shape of an illegal one: judgemental, requiring business rules to reach (`is_fraud`, `risk_score`,
+  `action`).
 
-- **为什么**：这是 CEE 区别于"LLM 全权 Agent"的核心边界。一旦决策权混进抽取结果，确定性执行引擎就退化成了"LLM 说了算，代码只是壳子"。
-- **强制机制**：`Injector.Extract` 只拷贝 `Schema` 里声明过的字段到 `StructuredPayload`，schema 之外的字段会被静默丢弃（见 `injector.go` 的 `clean` 构造逻辑）。**因此这条规则实际上是靠"不要在 Schema 里声明决策字段"来落地的**——Code Review 时如果看到一个 `Schema` 里出现 `is_valid`、`should_alert`、`severity_level` 这类字段名，必须打回。
-- 合法字段名的形状：名词性、可从原文直接验证真伪（`amount`、`merchant_name`、`invoice_id`）。非法字段名的形状：判断性、需要业务规则才能得出结论（`is_fraud`、`risk_score`、`action`）。
+#### 1.1.1 Clarifying the exception: why `std.rule_check` may produce judgement fields
 
-#### 1.1.1 例外澄清：`std.rule_check` 为什么可以产出判断字段
+`stdlib.std.rule_check` writes field names like `is_high_value` into its output — exactly the shape listed as illegal
+above. This is not a violation, but **the boundary of the exemption must be understood clearly, or this exception will
+be used to hollow out 1.1**:
 
-`stdlib.std.rule_check` 会往输出里写 `is_high_value` 这类字段名——形状上正好落在上一条列出的"非法字段名"里。这不是违规，但**必须理解清楚豁免的边界在哪，否则这条例外会被用来架空 1.1**：
+- 1.1 constrains **who made the judgement**, not **what the judgement looks like**. What is forbidden is "the LLM makes
+  the judgement and the code accepts it wholesale." A `std.rule_check` judgement is determined by the
+  `field / op / value` triple hard-written in the manifest: pure code, fully reproducible, statically auditable
+  (`cee validate` shows you exactly what it compares), with no LLM involved.
+- The test is therefore **where the field's value came from**:
+  - From an `llminjector` `Schema` → 1.1 applies; judgement fields are rejected outright.
+  - From a deterministic computation in `stdlib` or a domain Go hook → allowed, because that *is* the business rule,
+    and business rules were always meant to be carried by code.
+- **The forbidden combination**: extracting a factual field with `llminjector` (legal) and then comparing it with
+  `std.rule_check` is fine; but it is **not allowed** to have the extractor directly output an already-computed
+  judgement and then use `std.set` to move it verbatim into the context to "launder" it. During code review, a
+  `std.set` whose `fields` values are not literal constants but judgement fields sourced from an extraction result is
+  treated as a violation of 1.1.
 
-- 1.1 约束的是**谁做的判断**，不是**判断长什么样**。禁止的是"判断由 LLM 做出、代码照单全收"；`std.rule_check` 的判断由 manifest 里写死的 `field / op / value` 三元组决定，是纯代码、完全可复现、可静态审计（`cee validate` 就能看出它比的是什么），跟 LLM 无关。
-- 因此判据是**这个字段的值从哪来**：
-  - 来自 `llminjector` 的 `Schema` → 适用 1.1，判断字段一律打回。
-  - 来自 `stdlib` 或领域 Go Hook 的确定性计算 → 允许，因为它就是"业务规则"本身，而业务规则本来就该由代码承担。
-- **禁止的组合**：用 `llminjector` 抽出一个事实字段（合法），再让 `std.rule_check` 去比对它——这本身没问题；但**不允许**让 Extractor 直接输出一个已经算好的判断结果，再用 `std.set` 原样搬进 context 来"洗白"。Code Review 时如果看到 `std.set` 的 `fields` 值不是字面常量而是来自抽取结果的判断字段，按违反 1.1 处理。
+#### 1.1.2 An extraction is a "guess," not a "fact"
 
-#### 1.1.2 抽取出来的是"猜测"，不是"事实"
+Rule 1.1 blocks "the LLM says what to do," but it does not block **reading one number wrong**. An extractor that reads
+$50,000 as $5,000 made no decision, and yet made every decision — the deterministic rules downstream will very
+confidently approve it automatically.
 
-1.1 挡住了"LLM 说该怎么办"，但挡不住**抽错一个数**。一个把 $50,000 读成 $5,000 的抽取器什么决定都没做，却又什么都决定了——下游的确定性规则会非常自信地自动放行。
+So `Injector.Extract` **structurally** stamps every field it produces with its provenance
+(`ExtractionResult.ModelDerived`); the extractor cannot exempt itself. `llminjector.ContextFrom` carries that stamp
+into the workflow context alongside the value (under the key `cee.model_derived`).
 
-因此 `Injector.Extract` **结构性地**给它产出的每个字段打上来源标记（`ExtractionResult.ModelDerived`），抽取器无法豁免。`llminjector.ContextFrom` 负责让这个标记跟着值一起进入 workflow context（key 为 `cee.model_derived`）。
-
-- **为什么不是置信度分数**：模型自报的置信度引擎无法审计，而**一个没人能核实的数字比没有数字更糟——它制造虚假的安心**。"这个值是不是模型猜的"则是一个在产生的那一刻就百分之百确定的结构性事实。
-- **有后果的 Step 必须自己挡**：转账、隔离主机、停用账号这类步骤，应当用 `std.require_verified` 声明哪些字段不接受猜测值，失败经断路器转人工：
+- **Why not a confidence score**: a model's self-reported confidence cannot be audited by the engine, and **a number
+  nobody can verify is worse than no number — it manufactures false comfort.** Whereas "was this value guessed by a
+  model" is a structural fact, 100% certain at the moment it is produced.
+- **Consequential steps must guard themselves**: steps like transferring money, isolating a host, or disabling an
+  account should use `std.require_verified` to declare which fields will not accept guessed values, failing through
+  the circuit breaker to a human:
 
   ```json
   {"action_ref": "std.require_verified", "with": {"fields": ["amount", "account"]},
    "circuit_breaker_policy_ref": "needs_human_check"}
   ```
 
-- **禁止洗白（对应 1.1.1 同一类漏洞）**：**不存在也不允许新增任何"把字段标记为已核实"的标准动作**。manifest 里能盖"已核实"的图章就是一件洗钱工具——抽一个数、盖个章、照着执行。把一个值从"猜测"提升为"事实"只能由 Go Hook 完成，且必须是**真的**去对了权威系统或问了人之后。Code Review 时看到任何直接改写 `cee.model_derived` 的 Hook，按违反本条处理。
-- **调用方不得手动 merge 抽取结果**：`ContextFrom` 存在的唯一理由就是让正确做法比错误做法更省事。直接把 `StructuredPayload` 拷进 context 会静默丢掉来源，之后 `std.require_verified` 就形同虚设。
+- **Laundering is forbidden (the same class of hole as 1.1.1)**: **no standard action that "marks a field as verified"
+  exists, and none may be added.** A stamp in the manifest that says "verified" is a money-laundering tool — extract a
+  number, stamp it, execute against it. Promoting a value from "guess" to "fact" may only be done by a Go hook, and
+  only after it has **actually** consulted the authoritative system or asked a person. During code review, any hook
+  that directly rewrites `cee.model_derived` is treated as a violation of this rule.
+- **Callers must not merge extraction results by hand**: `ContextFrom` exists for exactly one reason — to make the
+  correct approach less work than the incorrect one. Copying `StructuredPayload` straight into the context silently
+  drops provenance, after which `std.require_verified` is decorative.
 
-### 1.2 Sandbox Probe 必须只读/模拟，不能有真实副作用
+### 1.2 Sandbox probes must be read-only/simulated, with no real side effects
 
-`sandbox.Probe` 注册的函数运行在"预演"阶段，**在真实 Step 执行之前**。探针内部不允许调用任何会修改外部状态的 API（转账、发通知、改配置、写数据库……）。
+Functions registered via `sandbox.Probe` run during the rehearsal phase, **before the real step executes**. A probe may
+not call any API that modifies external state (transfers, notifications, config changes, database writes, …).
 
-- **为什么**：沙盒存在的意义是"先模拟再决定要不要真做"；如果探针本身有副作用，"预演"这个概念就不成立了，等于执行了两次。
-- **Code Review 检查点**：任何 Probe 函数体内出现 `POST`/`PUT`/`DELETE` 语义的调用，或任何写数据库操作，直接打回。允许的操作：只读 API 调用、连通性检查、dry-run 模式的 API（前提是该 API 的 dry-run 参数被第三方证实不产生副作用）。
+- **Why**: the sandbox exists to "simulate first, then decide whether to really do it." If the probe itself has side
+  effects, "rehearsal" is not a coherent concept — it is executing twice.
+- **Code review checkpoint**: any call with `POST`/`PUT`/`DELETE` semantics inside a probe body, or any database write,
+  is rejected outright. Permitted: read-only API calls, connectivity checks, dry-run mode APIs (provided the API's
+  dry-run parameter is independently confirmed to produce no side effects).
 
-### 1.3 断路器策略必须以命名引用声明，不允许内联
+### 1.3 Circuit breaker policies must be declared by named reference, never inlined
 
-`LeafStep`/`CompositeStep` 的 `CircuitBreakerPolicyRef` 必须指向一个通过 `Engine.RegisterPolicy` 注册的策略。**不允许**在 `Action` 函数内部手写 `for`/重试循环、`time.Sleep` 退避、或者硬编码的 fallback 逻辑来绕开这个机制。
+The `CircuitBreakerPolicyRef` on a `LeafStep`/`CompositeStep` must point at a policy registered via
+`Engine.RegisterPolicy`. Hand-written `for`/retry loops, `time.Sleep` backoff, or hard-coded fallback logic inside an
+`Action` function that bypasses this mechanism are **not allowed**.
 
-- **为什么**：策略集中注册是"全局可审计"的前提——治理者需要能回答"系统里一共有多少条安全网、分别兜底到哪"，如果重试逻辑散落在各个 `Action` 函数体内部，这个问题永远答不出来。
-- **Code Review 检查点**：`Action`/`Run` 函数体内出现循环 + `time.Sleep`/重试计数器组合模式，视为违规,应该重构成"失败就返回 error，由 `CircuitBreakerPolicyRef` 接管"。
+- **Why**: centralised policy registration is the precondition for global auditability — a governance owner needs to be
+  able to answer "how many safety nets exist in this system, and where does each fall back to." If retry logic is
+  scattered inside individual `Action` bodies, that question can never be answered.
+- **Code review checkpoint**: a loop plus `time.Sleep`/retry-counter pattern inside an `Action`/`Run` body is a
+  violation; it should be refactored into "return an error on failure, and let `CircuitBreakerPolicyRef` take over."
 
-### 1.4 引擎包本身不允许出现行业逻辑
+### 1.4 No industry logic inside the engine packages
 
-`entities`、`execution`、`intentrouter`、`llminjector`、`sandbox`、`registry`、`manifest`、`stdlib` 这八个包，**任何时候都不允许 import 或硬编码某个具体行业的概念**（不能出现 `if domainID == "finance"` 这类分支，不能有字段叫 `InvoiceAmount` 而不是通用的 `map[string]any`）。
+The eight packages `entities`, `execution`, `intentrouter`, `llminjector`, `sandbox`, `registry`, `manifest`, and
+`stdlib` **may never import or hard-code any specific industry's concepts** (no `if domainID == "finance"` branches; no
+field called `InvoiceAmount` instead of a generic `map[string]any`).
 
-`stdlib` 尤其要守住这条：标准动作库天然会被"再加一个动作就能支持某某场景"的需求拉扯。判据是**动作名和参数里不能出现任何行业名词**——`std.require` 合法（它只知道"字段、运算符、值"），一个假想的 `std.check_invoice_total` 则非法，那属于领域插件自己的 Go Hook。
+`stdlib` in particular must hold this line: a standard action library is naturally pulled at by "just one more action
+and we could support scenario X." The test is that **no industry noun may appear in an action name or its
+parameters** — `std.require` is legal (it only knows about "field, operator, value"); a hypothetical
+`std.check_invoice_total` is not, and belongs in a domain plugin's own Go hook.
 
-- **为什么**：这是"引擎只认引用不认内容"的字面意义。一旦某个行业的假设混进引擎包，其他行业接入时就会遇到"看似通用实际上只适配了第一个行业"的问题。
-- **验证方法**：`registry/registry_test.go` 里的 `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` 是活文档——任何一次引擎改动之后，这个测试必须仍然只用两个词汇完全不重叠的领域（当前是 finance / security）就能验证通过，不需要为了让测试过而往引擎里加特殊分支。
+- **Why**: this is the literal meaning of "the engine knows references, not content." Once one industry's assumptions
+  leak into an engine package, the next industry to plug in hits the "looks generic, actually only fits the first
+  industry" problem.
+- **Verification**: `TestTwoUnrelatedDomainsCoexistWithoutEngineChanges` in `registry/registry_test.go` is a living
+  document — after any engine change, this test must still pass using two domains with entirely non-overlapping
+  vocabularies (currently finance / security), without adding a special-case branch to the engine to make it pass.
 
-### 1.5 核心模块零外部依赖，依赖只能住在卫星 module
+### 1.5 Zero external dependencies in the core; dependencies live only in satellite modules
 
-核心 `cee` 模块（仓库根的 `go.mod`）**只允许依赖 Go 标准库**——`go.mod` 里必须没有任何 `require` 条目。这不是洁癖，而是这个项目可传播的卖点：任何人都能 `go build` 而不用信任、审计、拉取第三方代码。
+The core `cee` module (the repo root `go.mod`) **may depend only on the Go standard library** — `go.mod` must contain
+no `require` entries. This is not fastidiousness; it is what makes the project propagate: anyone can `go build` without
+trusting, auditing, or fetching third-party code.
 
-需要重型后端（容器运行时、E2B/云沙盒 SDK、WASM 运行时、向量数据库客户端……）的实现,**不允许进核心**,必须放进 `satellites/<名字>/` 下、带自己独立的 `go.mod`。因为 `go build ./...` 不会进入带自己 `go.mod` 的子目录,卫星的依赖永远到不了核心。卫星必须通过核心已有的接口（`execution.Prober`、`llminjector.Extractor`、`intentrouter.Vectorizer` 等）插入,不得要求核心为它改动。
+Implementations needing heavyweight backends (container runtimes, E2B/cloud sandbox SDKs, WASM runtimes, vector
+database clients, …) **may not enter the core**. They must live under `satellites/<name>/` with their own `go.mod`.
+Because `go build ./...` does not descend into subdirectories with their own `go.mod`, a satellite's dependencies can
+never reach the core. A satellite must plug in through an interface the core already exposes (`execution.Prober`,
+`llminjector.Extractor`, `intentrouter.Vectorizer`, …) and must not require the core to change for it.
 
-- **判据**：能用标准库 + 打 HTTP 端点解决的（如 `llmhttp`/`embedhttp` 打 OpenAI 兼容 API），留在核心；必须 vendor 某个 SDK 或 CGO/二进制运行时的，进卫星。
-- **Code Review 检查点**：任何给根 `go.mod` 添加 `require` 的 PR，一律打回,请改成卫星 module。`satellites/dockersandbox` 是参考样板。
+- **The test**: if it can be solved with the standard library plus an HTTP endpoint (as `llmhttp`/`embedhttp` do
+  against OpenAI-compatible APIs), it stays in the core. If it must vendor an SDK, or needs CGO or a binary runtime,
+  it goes to a satellite.
+- **Code review checkpoint**: any PR adding a `require` to the root `go.mod` is rejected — convert it to a satellite
+  module. `satellites/dockersandbox` is the reference template.
 
-## 2. 命名规范
+## 2. Naming conventions
 
-| 标识符 | 格式 | 示例 | 说明 |
+| Identifier | Format | Example | Notes |
 |---|---|---|---|
-| `DomainID` | 小写、单个单词或短横线 | `finance`、`network-security` | 全局唯一，两个领域不能同名 |
-| `IntentNode.NodeID` | `<domain>.<snake_case 动作>` | `finance.duplicate_expense` | 域前缀避免跨域碰撞时难以定位来源 |
-| `Workflow.WorkflowID` | `<domain>.<snake_case 流程名>` | `finance.flag_duplicate` | **同时也是 `IntentNode.EntryWorkflowRef` / manifest 里 `entry_workflow_ref` 要填的值**。这个字段以前叫 `EntryStepRef` / `entry_step_ref`，是个错名——它从来装的都是 workflow_id，不是 step_id。现已改名；旧的 JSON 名按第 3 条继续接受但会告警，**新 manifest 一律用 `entry_workflow_ref`** |
-| `Step.StepID` | `<snake_case 动作>`，域内唯一即可,不需要域前缀 | `check`、`notify`、`human_review` | 只在所属 Workflow 内寻址,不需要跨域唯一 |
-| `parallel` step 的 `branches` | 一组 `<domain>.<snake_case 流程名>` | `["onboarding.credit_check", "onboarding.sanctions_check"]` | 装的是 workflow_id，跟 `sub_workflow_ref` 同一种值。**分支必须写不同的输出字段**：两个分支给同一字段写不同的值会被引擎拒绝（见技术说明书 5.9.2），这属于设计期就该避开的形状 |
-| `CircuitBreakerPolicy.PolicyID` | `<snake_case 策略意图>` | `escalate_to_review`、`security_containment_gate` | 命名应体现"失败后做什么",而不是"哪个 Step 用了它"——同一策略允许被多个 Step 引用 |
-| `schema_ref` / `probe_ref` / `action_ref` | `<domain>.<snake_case 名称>` | `finance.expense_fields`、`finance.check_duplicate` | 与 `NodeID` 同样加域前缀,原因相同 |
+| `DomainID` | lowercase, single word or hyphenated | `finance`, `network-security` | Globally unique; two domains may not share a name |
+| `IntentNode.NodeID` | `<domain>.<snake_case action>` | `finance.duplicate_expense` | The domain prefix keeps cross-domain collisions traceable to their source |
+| `Workflow.WorkflowID` | `<domain>.<snake_case process>` | `finance.flag_duplicate` | **Also the value to put in `IntentNode.EntryWorkflowRef` / `entry_workflow_ref` in a manifest.** This field used to be called `EntryStepRef` / `entry_step_ref`, which was a misnomer — it has always held a workflow_id, never a step_id. It has been renamed; the old JSON name is still accepted per rule 3 but warns. **New manifests must use `entry_workflow_ref`.** |
+| `Step.StepID` | `<snake_case action>`, unique within its workflow; no domain prefix needed | `check`, `notify`, `human_review` | Addressed only within its own workflow, so cross-domain uniqueness is unnecessary |
+| A parallel step's `branches` | A list of `<domain>.<snake_case process>` | `["onboarding.credit_check", "onboarding.sanctions_check"]` | Holds workflow_ids, the same kind of value as `sub_workflow_ref`. **Branches must write distinct output fields**: two branches writing one field with different values is refused by the engine (specification 5.9.2), and is a shape to design away rather than discover at runtime |
+| `CircuitBreakerPolicy.PolicyID` | `<snake_case policy intent>` | `escalate_to_review`, `security_containment_gate` | The name should express "what happens after a failure," not "which step uses it" — one policy may be referenced by many steps |
+| `schema_ref` / `probe_ref` / `action_ref` | `<domain>.<snake_case name>` | `finance.expense_fields`, `finance.check_duplicate` | Domain-prefixed for the same reason as `NodeID` |
 
-## 3. Manifest 版本兼容规则
+## 3. Manifest version compatibility rules
 
-- `manifest.File` 新增字段时，必须使用 `omitempty` 或保证零值语义合理（现有 `StepSpec` 里的可选字段已按此处理），**不允许**让新增字段成为必填,否则历史 manifest 会直接解析失败而不是优雅降级。
-- **不允许**删除或重命名 `manifest.File`/`IntentSpec`/`PolicySpec`/`WorkflowSpec`/`StepSpec` 里已存在的 JSON 字段名——这些是对外契约，改名等同于破坏所有已发布的 manifest。如确需废弃，先标记 deprecated 并保留字段至少一个大版本周期。
-- `Load` 函数对任何无法识别的字段组合（未知 `type`、缺失的引用）必须返回 `error`，**不允许**静默忽略或使用默认值兜底——一个写错的 manifest 应该在加载时就失败，而不是在运行到一半时才暴露问题。
+- When adding a field to `manifest.File`, it must use `omitempty` or have sensible zero-value semantics (the existing
+  optional fields in `StepSpec` already follow this). A new field **may not** be made mandatory, or historical
+  manifests will fail to parse outright instead of degrading gracefully.
+- **Never** delete or rename an existing JSON field name in `manifest.File`/`IntentSpec`/`PolicySpec`/`WorkflowSpec`/
+  `StepSpec` — these are the external contract, and renaming one breaks every published manifest. If deprecation is
+  genuinely needed, mark it deprecated first and keep the field for at least one major version cycle.
+- `Load` must return an `error` for any unrecognised field combination (unknown `type`, missing reference). It **may
+  not** silently ignore it or fall back to a default — a mis-written manifest should fail at load time, not halfway
+  through a run.
 
-## 4. 贡献 PR 检查清单
+## 4. Contribution PR checklist
 
-任何修改以下内容的 PR，提交前自查：
+Self-check before submitting any PR that modifies the following:
 
-- [ ] 是否触碰了 `entities`/`execution`/`intentrouter`/`llminjector`/`sandbox`/`registry`/`manifest`/`stdlib` 八个引擎包？如果是，`registry_test.go` 的双域测试是否仍然通过、且未新增行业特化分支（对应第 1.4 条）。
-- [ ] 新增/修改 manifest 后，`go run ./cmd/cee validate <manifest.json>` 是否无 error。
-- [ ] 新增标准动作时，动作名与参数里是否不含任何行业名词（对应第 1.4 条）；若它会产出判断性字段，是否符合第 1.1.1 条的豁免边界。
-- [ ] 新增的 `Schema` 字段是否全部是事实性字段，没有决策字段混入（对应第 1.1 条）。
-- [ ] 新增的 `Probe` 实现是否只读/模拟,审查者需要能一眼确认没有真实副作用（对应第 1.2 条）。
-- [ ] 新增的 `CircuitBreakerPolicyRef` 使用是否指向了通过 `RegisterPolicy` 注册的策略,而不是在 `Action` 内部手写重试（对应第 1.3 条）。
-- [ ] 新增的标识符（`NodeID`/`WorkflowID`/`PolicyID`/`*_ref`）是否遵循第 2 节命名规范。
-- [ ] 是否为新路径补充了测试：至少一条成功路径 + 一条失败/未注册引用路径。
-- [ ] `go build ./...`、`go vet ./...`、`go test ./...` 是否全部通过。
-- [ ] 是否新引入了外部依赖？`go.mod` 目前零依赖是有意为之,新增依赖需要在 PR 描述里单独说明理由,不能顺带引入。
+- [ ] Did it touch the eight engine packages (`entities`/`execution`/`intentrouter`/`llminjector`/`sandbox`/`registry`/
+      `manifest`/`stdlib`)? If so, does the two-domain test in `registry_test.go` still pass, without a new
+      industry-specific branch (rule 1.4)?
+- [ ] After adding/modifying a manifest, does `go run ./cmd/cee validate <manifest.json>` report no errors?
+- [ ] When adding a standard action, is the action name and its parameters free of industry nouns (rule 1.4)? If it
+      produces judgement fields, does it fall within the exemption boundary of rule 1.1.1?
+- [ ] Are all new `Schema` fields factual, with no decision fields mixed in (rule 1.1)?
+- [ ] Is each new `Probe` implementation read-only/simulated — such that a reviewer can confirm at a glance that it has
+      no real side effects (rule 1.2)?
+- [ ] Does each new `CircuitBreakerPolicyRef` point at a policy registered via `RegisterPolicy`, rather than a
+      hand-written retry inside an `Action` (rule 1.3)?
+- [ ] Do new identifiers (`NodeID`/`WorkflowID`/`PolicyID`/`*_ref`) follow the naming conventions in section 2?
+- [ ] Were tests added for new paths: at least one success path plus one failure/unregistered-reference path?
+- [ ] Do `go build ./...`, `go vet ./...`, and `go test ./...` all pass?
+- [ ] Were any external dependencies introduced? `go.mod` being dependency-free is deliberate; a new dependency needs
+      its own justification in the PR description and may not be slipped in alongside other work.
 
-## 5. 错误处理规范
+## 5. Error handling conventions
 
-- 引擎包内部一律使用 Go 原生 `error`（含 `CircuitBreakerTripped` 这类自定义 error 类型），**不使用 `panic` 做正常业务流程控制**——`panic` 只允许用于真正的编程错误（例如内部不变量被破坏），且必须在包边界之前 `recover`。
-- 需要判断具体错误类型时使用 `errors.As`/`errors.Is`（参考 `engine_test.go` 里对 `*CircuitBreakerTripped` 的断言方式），不使用字符串匹配错误信息。
+- Engine packages use native Go `error` throughout (including custom error types such as `CircuitBreakerTripped`).
+  **`panic` is not used for normal business control flow** — `panic` is permitted only for genuine programming errors
+  (an internal invariant being broken) and must be `recover`ed before the package boundary.
+- Use `errors.As`/`errors.Is` when the specific error type matters (see how `engine_test.go` asserts on
+  `*CircuitBreakerTripped`). Do not match on error message strings.

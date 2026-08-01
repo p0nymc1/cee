@@ -93,9 +93,9 @@ const shell = `<!doctype html>
 {{.Body}}
 <footer>
 <a href="https://github.com/{{.Repo}}">Source</a> ·
-<a href="https://github.com/{{.Repo}}/blob/main/docs/TECHNICAL_SPECIFICATION.en.md">Specification</a> ·
-<a href="https://github.com/{{.Repo}}/blob/main/docs/DEVELOPMENT_GUIDE.en.md">Development guide</a> ·
-<a href="https://github.com/{{.Repo}}/blob/main/docs/NORMATIVE_HANDBOOK.en.md">Normative handbook</a>
+<a href="https://github.com/{{.Repo}}/blob/main/docs/TECHNICAL_SPECIFICATION.md">Specification</a> ·
+<a href="https://github.com/{{.Repo}}/blob/main/docs/DEVELOPMENT_GUIDE.md">Development guide</a> ·
+<a href="https://github.com/{{.Repo}}/blob/main/docs/NORMATIVE_HANDBOOK.md">Normative handbook</a>
 <p>Built {{.Built}} from commit <code>{{.Short}}</code>.</p>
 </footer>
 </main>
@@ -188,7 +188,7 @@ catalog/plugins/&lt;name&gt;/benchmark.json   a set of {workflow_ref, context} e
 catalog/index.json                      one entry pointing at both</code></pre>
 <p>Then <code>cee lint</code> to check it and <code>cee bench</code> to see where you land. The
 full walkthrough is in the
-<a href="https://github.com/{{.Repo}}/blob/main/CONTRIBUTING.en.md">contributing guide</a>.</p>
+<a href="https://github.com/{{.Repo}}/blob/main/CONTRIBUTING.md">contributing guide</a>.</p>
 
 <details>
 <summary>Raw <code>cee bench</code> output</summary>

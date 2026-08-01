@@ -1,21 +1,25 @@
-# CEE 技术说明书
+# CEE Technical Specification
 
-> English: [TECHNICAL_SPECIFICATION.en.md](TECHNICAL_SPECIFICATION.en.md)
+Version: corresponds to the current state of the code. This specification describes only what is implemented and
+tested; it does not describe roadmap items that have not landed (see section 11).
 
-版本：对应当前代码状态（`entities` / `execution` / `intentrouter` / `llminjector` / `sandbox` / `registry` / `manifest` / `stdlib` 八个库包，外加 `cmd/cee` 命令行工具）。本说明书只描述已经实现并通过测试的部分，不描述路线图中尚未落地的内容（见第 10 节）。
+## 1. Positioning
 
-## 1. 产品定位
+CEE (Cognitive Execution Engine) is not an application for one industry. It is a **business-agnostic deterministic
+execution protocol**. Its core claims:
 
-CEE（Cognitive Execution Engine，认知执行引擎）不是一个针对某个行业的应用，而是一套**跟业务无关的确定性执行协议**。它的核心主张：
+- Most business processes stuffed into "agents" have a well-defined path and do not need an LLM deciding each step.
+  The one place an LLM is genuinely needed is turning unstructured input into structured fields.
+- The engine knows *references*, not business content — the four core components exchange only the fixed shapes
+  defined in the `entities` package (`IntentNode`, `MatchResult`, `ExtractionRequest/Result`, `ProbeRequest/Result`,
+  `WorkflowResult`), never an unagreed map. That is what lets any industry's business logic plug in as a domain plugin
+  without changing engine code.
 
-- 大多数被塞进"智能体"里的业务流程，本质上路径明确、不需要 LLM 每一步做决策；真正需要 LLM 的地方，只有"把非结构化输入转成结构化字段"这一件事。
-- 引擎只认"引用"，不认业务内容——四个核心组件互相之间只交换 `entities` 包定义的固定形状（`IntentNode`、`MatchResult`、`ExtractionRequest/Result`、`ProbeRequest/Result`、`WorkflowResult`），从不传递未经约定的 map。这使得任何行业的业务逻辑都可以作为"领域插件"接入，引擎代码本身不需要改动。
-
-## 2. 系统架构
+## 2. System architecture
 
 ```mermaid
 flowchart TB
-    subgraph RUNTIME["CEE Runtime（cee module）"]
+    subgraph RUNTIME["CEE Runtime (cee module)"]
         IR[intentrouter.Router]
         DEE[execution.Engine]
         LLM[llminjector.Injector]
@@ -30,33 +34,37 @@ flowchart TB
         DEE -. Prober interface .-> SBX
     end
 
-    L1["L1 插件（无代码）<br/>纯 JSON manifest + std.* 动作"] --> MAN
-    L2["L2 插件（有代码）<br/>JSON manifest + Go Hooks"] --> MAN
-    L2 -.也可以直接构造 Domain.-> REG
-    CLI["cmd/cee validate"] -.静态校验，不执行.-> MAN
+    L1["L1 plugin (no code)<br/>pure JSON manifest + std.* actions"] --> MAN
+    L2["L2 plugin (with code)<br/>JSON manifest + Go hooks"] --> MAN
+    L2 -.can also construct a Domain directly.-> REG
+    CLI["cmd/cee validate"] -.static validation, no execution.-> MAN
 ```
 
-各包的职责边界：
+Package responsibilities:
 
-| 包 | 职责 | 对外暴露的核心类型 |
+| Package | Responsibility | Key exported types |
 |---|---|---|
-| `entities` | 定义组件间交换的固定数据形状 | `IntentNode`、`MatchResult`、`ExtractionRequest/Result`、`ProbeRequest/Result`、`WorkflowResult` |
-| `intentrouter` | 意图路由层：把自然语言匹配到某个领域预注册的意图节点 | `Router`、`NewRouter`、`RegisterNode`、`Match` |
-| `execution` | 确定性执行引擎（DEE）：走 Step DAG，调用沙盒门禁、执行断路器兜底、挂起/恢复等待外部事件的流程 | `Engine`、`Step`、`LeafStep`、`CompositeStep`、`Workflow`、`CircuitBreakerPolicy`、`CircuitBreakerTripped`、`Prober`、`Suspended`、`Store`、`MemoryStore`、`State` |
-| `llminjector` | 边缘 LLM 注入器：仅做"文本→结构化字段"抽取，输出被裁剪到 schema 声明的字段 | `Injector`、`Schema`、`FieldType`、`Extractor` |
-| `llmhttp` | 真实 LLM 后端：仅用 `net/http` 打 OpenAI 兼容端点，产出 `llminjector.Extractor`（零依赖） | `Config`、`Extractor`、`Doer` |
-| `embedhttp` | 真实语义匹配后端：仅用 `net/http` 打 embedding 端点，产出 `intentrouter.Vectorizer`（零依赖） | `Config`、`New`、`Client`、`Doer` |
-| `sandbox` | 预执行沙盒：在真正执行有副作用的 Step 前先模拟一次 | `Sandbox`、`Probe` |
-| `filestore` | 落盘的 `execution.Store` 实现：挂起的流程存成 JSON，跨重启存活 | `Store`、`New`、`Pending` |
-| `registry` | 领域注册表：把一个领域插件的 intents/workflows/policies 接入共享的 Router 和 Engine | `Registry`、`Domain` |
-| `scorecard` | 度量一次请求：确定性步数 / LLM 调用 / 沙盒预演 / 断路器次数 / 耗时，用于跟"朴素 Agent"基线对比 | `Scorecard`、`Recorder`、`NewRecorder` |
-| `stdlib` | 标准动作库：骨架预置的通用确定性动作，manifest 靠纯 JSON 引用并传参，插件作者不用写 Go | `Library`、`Factory`、`Default`（含 `std.set`/`std.require`/`std.rule_check`/`std.suspend`） |
-| `manifest` | 声明式加载器 + 静态校验器：把 JSON DAG 绑定到标准动作/Go 具名函数，并可在运行前静态校验引用完整性 | `Load`、`Validate`、`Report`、`Hooks`、`File`、`StepSpec` 等 |
-| `catalog` | 社区分发层：git-based 插件目录（index.json + manifest 文件），支持列举/整体校验/安装/基准 | `Catalog`、`Entry`、`Load`、`Lint`、`Install`、`ReadBenchmark` |
-| `bench` | 基准跑批：把一批标准事件跑过插件，聚合 Scorecard 并按确定性比率排名 | `Suite`、`Event`、`Result`、`Run`、`Leaderboard` |
-| `cmd/cee` | 命令行工具：`validate` / `lint` / `list` / `install` / `bench`（均可用于 CI） | — |
+| `entities` | Defines the fixed data shapes exchanged between components | `IntentNode`, `MatchResult`, `ExtractionRequest/Result`, `ProbeRequest/Result`, `WorkflowResult` |
+| `intentrouter` | Intent routing: match natural language to an intent node a domain pre-registered | `Router`, `NewRouter`, `RegisterNode`, `Match` |
+| `execution` | The deterministic execution engine (DEE): walk the step DAG, gate on the sandbox, fall back through circuit breakers, suspend/resume around external events | `Engine`, `Step`, `LeafStep`, `CompositeStep`, `Workflow`, `CircuitBreakerPolicy`, `CircuitBreakerTripped`, `Prober`, `Suspended`, `Store`, `MemoryStore`, `State` |
+| `llminjector` | Edge LLM injector: text → structured fields only, output clipped to the schema's declared fields | `Injector`, `Schema`, `FieldType`, `Extractor` |
+| `llmhttp` | Real LLM backend: hits an OpenAI-compatible endpoint using only `net/http`, produces an `llminjector.Extractor` (zero-dependency) | `Config`, `Extractor`, `Doer` |
+| `embedhttp` | Real semantic matching backend: hits an embedding endpoint using only `net/http`, produces an `intentrouter.Vectorizer` (zero-dependency) | `Config`, `New`, `Client`, `Doer` |
+| `sandbox` | Pre-execution sandbox: simulate a step with side effects before really running it | `Sandbox`, `Probe` |
+| `filestore` | Durable `execution.Store`: suspended processes stored as JSON, surviving restarts | `Store`, `New`, `Pending`, `Orphaned` |
+| `registry` | Domain registry: plug a domain plugin's intents/workflows/policies into the shared Router and Engine | `Registry`, `Domain` |
+| `replay` | Record and replay the non-deterministic entry points (probes, extraction) to diff a rule change against history | `Recorder`, `Replayer`, `Diff` |
+| `draft` | Have a model draft a manifest, behind four validation gates | `Draft`, `Config`, `MaxAttempts` |
+| `httpapi` | A mountable `http.Handler` in front of an engine; denies anonymous callers by default | `Config`, `New`, `PendingLister` |
+| `scorecard` | Per-request metrics: deterministic steps / LLM calls / sandbox rehearsals / breaker trips / elapsed time, for comparison against a naive-agent baseline | `Scorecard`, `Recorder`, `NewRecorder` |
+| `diagnostics` | Cross-run error-side metrics: intent miss rate, probe refusal rate, escalation rate | `Report`, `Recorder`, `NewRecorder` |
+| `stdlib` | Standard action library: generic deterministic actions the skeleton ships, referenced and parameterised from pure JSON so plugin authors write no Go | `Library`, `Factory`, `Default` |
+| `manifest` | Declarative loader + static validator: bind a JSON DAG to standard actions/named Go functions, and validate reference integrity before running | `Load`, `Validate`, `Report`, `Hooks`, `File`, `StepSpec` |
+| `catalog` | Community distribution layer: a git-based plugin directory (index.json + manifest files) supporting listing/validating/installing/benchmarking | `Catalog`, `Entry`, `Load`, `Lint`, `Install`, `ReadBenchmark` |
+| `bench` | Benchmark batches: run a set of standard events through a plugin, aggregate Scorecards, rank by determinism ratio | `Suite`, `Event`, `Result`, `Run`, `Leaderboard` |
+| `cmd/cee` | CLI: `validate` / `lint` / `list` / `install` / `bench` / `draft` / `serve` | — |
 
-## 3. 核心实体模型（`entities` 包）
+## 3. Core entity model (`entities`)
 
 ```go
 type IntentNode struct {
@@ -91,238 +99,362 @@ type WorkflowResult struct {
 }
 ```
 
-这七个类型是整个系统唯一的"跨组件契约"。新增一个领域插件、替换 `intentrouter` 的匹配算法（例如换成真正的向量检索）、或者把 `sandbox` 换成 E2B/Docker 实现，都不需要改动这些类型——这是"引擎只认引用"原则在代码层面的体现。
+These seven types are the system's only cross-component contract. Adding a domain plugin, replacing
+`intentrouter`'s matching algorithm (with real vector retrieval, say), or swapping `sandbox` for an E2B/Docker
+implementation requires no change to them — this is "the engine knows references" expressed at the code level.
 
-## 4. 意图路由层（`intentrouter`）
+## 4. Intent routing (`intentrouter`)
 
-- `Router` 内部按 `DomainID` 分桶存储 `IntentNode`，`Match(domainID, rawText)` 只在对应桶内做匹配，**不会跨域检索**——两个领域即使用词高度相似也不会互相误命中（见 `intentrouter/router_test.go` 的 `TestMatchDoesNotLeakAcrossDomains`）。
-- **默认匹配算法是词汇 Jaccard 相似度**（`tokenize` + 集合交并比），零依赖、可在无网络环境下运行——一个刻意的轻量级默认。
-- **升级为语义匹配只需一行**：`router.SetVectorizer(v)` 挂上一个 `Vectorizer`（`embedhttp.New(...)` 就是一个真实的、打 embedding 端点的实现），匹配即从词汇交并比切换为**embedding 余弦相似度**——于是"unusual sign-in from a new device"能匹配到"suspicious login"，尽管两者一个词都不重合（见 `intentrouter/semantic_test.go` 的 `TestSemanticMatchAcrossVocabulary`）。这印证了第 3 节"替换匹配算法不动契约"的承诺:`RegisterNode`/`Match` 的签名一字未变。
-- **example 向量惰性计算并缓存**（首次 `Match` 时算，之后只算 query）；由于 `Match` 签名没有 error 返回，若 embedding 端点报错，`Match` **降级回词汇匹配**而不是崩溃（`TestSemanticFailureDegradesToLexical`）——一个抖动的 embedding 服务不会把路由层拖垮。
-- `Match` 返回的 `MatchResult.Matched == false` 是一个明确信号，而不是猜测——调用方应据此转向 `llminjector` 做抽取，而不是让路由层"勉强给个答案"。
+- `Router` stores `IntentNode`s bucketed by `DomainID`. `Match(domainID, rawText)` matches only within the
+  corresponding bucket and **never searches across domains** — two domains with highly similar wording cannot
+  cross-match (see `TestMatchDoesNotLeakAcrossDomains` in `intentrouter/router_test.go`).
+- **The default algorithm is lexical Jaccard similarity** (`tokenize` plus set intersection over union): zero
+  dependencies, runs offline. A deliberately lightweight default.
+- **Upgrading to semantic matching takes one line**: `router.SetVectorizer(v)` attaches a `Vectorizer`
+  (`embedhttp.New(...)` is a real implementation hitting an embedding endpoint), switching matching from lexical
+  overlap to **embedding cosine similarity**. So "unusual sign-in from a new device" matches "suspicious login"
+  despite sharing no words (see `TestSemanticMatchAcrossVocabulary` in `intentrouter/semantic_test.go`). This bears
+  out section 3's promise that replacing the matching algorithm does not touch the contract: the signatures of
+  `RegisterNode`/`Match` did not change by a character.
+- **Example vectors are computed lazily and cached** (on the first `Match`; afterwards only the query is computed).
+  Since `Match` has no error return, a failing embedding endpoint makes `Match` **degrade to lexical matching** rather
+  than crash (`TestSemanticFailureDegradesToLexical`) — a flaky embedding service will not take the routing layer down.
+- `MatchResult.Matched == false` is an explicit signal, not a guess. The caller should route to `llminjector` for
+  extraction rather than have the routing layer force out an answer.
 
-## 5. 确定性执行引擎（`execution`）
+## 5. Deterministic execution engine (`execution`)
 
-### 5.1 Step 的三种形态
+### 5.1 The three step shapes
 
-`Step` 接口的方法未导出（`circuitBreakerPolicyRef() string`），意味着**只有本包内定义的类型能满足它**——Step 的形态在类型系统层面是封闭的，外部包加不进新形态。目前有三种：
+The `Step` interface's method is unexported (`circuitBreakerPolicyRef() string`), meaning **only types defined in
+this package can satisfy it** — step shape is closed at the type-system level, and no outside package can add one.
+There are currently three:
 
-- `LeafStep`：原子动作，`Run Action` 字段是一段确定性代码（`func(ctx map[string]any) (map[string]any, error)`）。
-- `CompositeStep`：指向一个具名子 `Workflow`（`SubWorkflowRef`），允许 DAG 嵌套复用，而不必把每个流程拍平成同一粒度。
-- `ParallelStep`：指向 N 个具名子 `Workflow`（`Branches`），并发执行后汇合，见 5.9。
+- `LeafStep`: an atomic action. Its `Run Action` field is a piece of deterministic code
+  (`func(ctx map[string]any) (map[string]any, error)`).
+- `CompositeStep`: points at a named sub-`Workflow` (`SubWorkflowRef`), letting DAGs nest and reuse rather than
+  flattening every process to one grain.
+- `ParallelStep`: points at N named sub-`Workflow`s (`Branches`), run concurrently and joined afterwards. See 5.9.
 
-封闭的是集合本身，不是它的大小。新增一种形态必须改引擎并通过引擎的测试；插件无法从外面塞进第四种。
+What is closed is the set itself, not its size. Adding a shape means changing the engine and passing its tests; a
+plugin cannot slip in a fourth from outside.
 
-### 5.2 执行循环
+### 5.2 The execution loop
 
-`Engine.Run(workflowRef, ctx)` 从 `Workflow.EntryStepID` 开始，逐步执行：
+`Engine.Run(workflowRef, ctx)` starts at `Workflow.EntryStepID` and proceeds step by step:
 
-1. 若当前 Step 是 `CompositeStep`，递归调用 `Run(SubWorkflowRef, ctx)`；子流程失败会以 `CircuitBreakerTripped` 形式冒泡，被外层 Step 自己的断路器策略捕获（唯一例外是 5.4 的两个失控错误，它们绕过断路器直接向上）。
-2. 若当前 Step 是 `LeafStep` 且声明了 `SandboxProbeRef`，先调用 `Prober.Probe`；探针不健康则走断路器路径，**不会尝试执行真实动作**。
-3. 探针通过（或未声明探针）后执行 `Run(ctx)`；返回的 map 与当前 context 合并（浅合并，后者覆盖前者同名 key），推进到 `OnSuccess` 指向的下一个 Step。
-4. 任何失败（探针不健康 / Action 返回 error）都进入 `onFailure`：查 `CircuitBreakerPolicyRef` 指向的策略，若有 `FallbackStepRef` 则跳转过去；否则返回 `*CircuitBreakerTripped` 错误，调用方必须显式处理，**没有隐式重试**。
-5. 第三条出边：Action 返回 `*Suspended` 时既不算成功也不算失败，流程存档挂起、返回恢复指针，详见 5.5。
+1. If the current step is a `CompositeStep`, recurse into `Run(SubWorkflowRef, ctx)`. A sub-workflow failure bubbles up
+   as `CircuitBreakerTripped` and is caught by the outer step's own breaker policy (the sole exception being the two
+   runaway errors in 5.4, which bypass the breaker and go straight up).
+2. If the current step is a `LeafStep` declaring a `SandboxProbeRef`, call `Prober.Probe` first. An unhealthy probe
+   takes the breaker path and **the real action is never attempted**.
+3. Once the probe passes (or if none was declared), run `Run(ctx)`. The returned map is merged into the current
+   context (shallow merge, later keys win) and execution advances to the step named by `OnSuccess`.
+4. Any failure (unhealthy probe / action returning an error) enters `onFailure`: look up the policy named by
+   `CircuitBreakerPolicyRef`; if it has a `FallbackStepRef`, jump there. Otherwise return a `*CircuitBreakerTripped`
+   error, which the caller must handle explicitly. **There are no implicit retries.**
+5. A third out-edge: when an action returns `*Suspended` it counts as neither success nor failure. The run is archived
+   and a resume pointer returned — see 5.5.
 
 ```mermaid
 flowchart TD
-    A[当前 Step] --> B{类型}
-    B -->|CompositeStep| C[递归 Run 子Workflow]
-    B -->|LeafStep 有 SandboxProbeRef| D[Prober.Probe]
-    B -->|LeafStep 无探针| F[执行 Action]
+    A[current step] --> B{kind}
+    B -->|CompositeStep| C[recurse into sub-workflow]
+    B -->|LeafStep with SandboxProbeRef| D[Prober.Probe]
+    B -->|LeafStep, no probe| F[run the action]
     D -->|healthy| F
     D -->|unhealthy| E[onFailure]
-    C -->|成功| G[合并输出, 走 OnSuccess]
-    C -->|失败| E
-    F -->|成功| G
-    F -->|失败| E
-    E -->|有 FallbackStepRef| G2[跳转到 fallback Step]
-    E -->|无策略/无fallback| H[返回 CircuitBreakerTripped]
+    C -->|success| G[merge output, follow OnSuccess]
+    C -->|failure| E
+    F -->|success| G
+    F -->|failure| E
+    E -->|has FallbackStepRef| G2[jump to the fallback step]
+    E -->|no policy / no fallback| H[return CircuitBreakerTripped]
 ```
 
-### 5.3 断路器是"策略引用"，不是内联字面量
+### 5.3 A breaker is a policy reference, not an inline literal
 
-`LeafStep`/`CompositeStep` 只声明一个 `CircuitBreakerPolicyRef string`；真正的 `FallbackStepRef` 定义在 `Engine.RegisterPolicy` 注册的全局策略表里。这样任何一个策略被谁引用、一共有多少个安全网，都可以从策略表一处审计，而不用扫遍所有 Step 定义。
+`LeafStep`/`CompositeStep` declare only a `CircuitBreakerPolicyRef string`; the actual `FallbackStepRef` lives in the
+global policy table registered via `Engine.RegisterPolicy`. So who references a policy, and how many safety nets exist
+in total, can be audited from one place rather than by scanning every step definition.
 
-兜底 Step 会拿到两个引擎写入的 context 字段，告诉它**自己是在处理哪一次失败**：
+A fallback step receives two engine-written context fields telling it **which failure it is handling**:
 
-| key | 内容 |
+| key | Contents |
 |---|---|
-| `cee.failure_reason` | 失败原因——Action 的 error 文本，或探针的 `DetectedFailureMode` |
-| `cee.failed_step` | 失败的那个 Step ID |
+| `cee.failure_reason` | Why it failed — the action's error text, or the probe's `DetectedFailureMode` |
+| `cee.failed_step` | The ID of the step that failed |
 
-这两个 key 只在断路器真的改道时才写；正常跑完的流程输出里不会有它们。加 `cee.` 前缀是因为这是引擎唯一一次往领域的 context 里塞自己的内容，不能跟领域字段撞名。
+These keys are written only when a breaker actually diverts; a normally completed run's output does not contain them.
+The `cee.` prefix exists because this is the one case where the engine puts its own content into a domain's context,
+and it must never collide with a domain field.
 
-**为什么需要**：原来 `reason` 只在"没有 fallback"时进 `CircuitBreakerTripped`，一旦有 fallback 就被丢掉——正好反了。兜底 Step 的存在意义就是处理失败，它恰恰是最需要知道"是哪次失败"的那个。写 `examples/meta_scenarios` 的同步场景时这个缺陷立刻暴露：探针的两种拒绝理由（目标行被人改过 / 目标行根本不存在）走到同一个兜底 Step，而那个 Step 只会报一句写死的话，于是**对其中一种情况是确凿的错报**。由 `TestTwoProbeVerdictsReachingOneFallbackStayDistinct` 锁住。
+**Why this is needed**: `reason` used to reach `CircuitBreakerTripped` only when there was *no* fallback, and was
+dropped as soon as one existed — exactly backwards. A fallback step exists to handle failure, so it is precisely the
+one that needs to know which failure. Writing the sync scenario in `examples/meta_scenarios` exposed this immediately:
+the probe's two refusal reasons (the target row was modified by someone / the target row does not exist at all) both
+reached the same fallback step, and that step could only report one hard-coded message — making it **confidently wrong
+about one of the two cases**. Locked down by `TestTwoProbeVerdictsReachingOneFallbackStayDistinct`.
 
-### 5.4 失控上限：结构性缺陷不该由断路器兜
+### 5.4 Runaway ceilings: structural defects should not be absorbed by a breaker
 
-DAG 的形状写错时，5.2 的执行循环有两条路会失控。这两条都**不是业务失败**，因此不走断路器：
+When a DAG's shape is written wrong, two paths in 5.2's loop can run away. Neither is a business failure, so neither
+goes through the breaker:
 
-| 缺陷 | 没有上限时的后果 | 上限 | 触发的错误 |
+| Defect | Consequence with no ceiling | Ceiling | Error raised |
 |---|---|---|---|
-| `OnSuccess` 首尾相接成环 | `Run` 无限空转，进程挂住 | `DefaultMaxSteps = 10000` | `*StepLimitExceeded` |
-| `SubWorkflowRef` 指回自己/互指 | 无限递归，**Go 运行时 `fatal error: stack overflow` 直接杀掉进程，且不可 `recover`** | `DefaultMaxDepth = 64` | `*DepthLimitExceeded` |
+| `OnSuccess` forming a cycle | `Run` spins forever, the process hangs | `DefaultMaxSteps = 10000` | `*StepLimitExceeded` |
+| `SubWorkflowRef` pointing at itself/mutually | Infinite recursion; the **Go runtime kills the process with `fatal error: stack overflow`, unrecoverable** | `DefaultMaxDepth = 64` | `*DepthLimitExceeded` |
 
-两个上限都设得远高于任何正常流程——一次 DAG 走法通常每个 Step 最多访问一次。可以用 `Engine.SetLimits(maxSteps, maxDepth)` 调整，但**关不掉**：传入非正值只会保留默认值。理由是失控是进程级危害，不是某个工作流自己的事，不该允许单个插件把整个运行时的护栏摘掉。
+Both ceilings sit far above any legitimate process — a DAG walk normally visits each step at most once. They can be
+tuned with `Engine.SetLimits(maxSteps, maxDepth)` but **cannot be switched off**: a non-positive value just keeps the
+default. The reason is that a runaway is a process-level hazard, not one workflow's business, and no single plugin
+should be able to remove the whole runtime's guardrail.
 
-`*StepLimitExceeded` 会带上 trace 的尾部（最后 10 步），环就在里面，便于直接定位。
+`*StepLimitExceeded` carries the tail of the trace (the last 10 steps), which is where the cycle is.
 
-一个刻意的设计取舍：**这两个错误绕过断路器，直接向上冒泡**。子流程失控时不查 `CircuitBreakerPolicyRef`、不跳 fallback。因为断路器的语义是"业务动作失败了，走备用路径"，而 DAG 成环是**结构缺陷**——让 fallback 吞掉它等于把 bug 藏起来，外层还可能反复重入同一个坏掉的子流程。这条边界由 `TestRunawayIsNotSwallowedByACircuitBreaker` 锁住。
+A deliberate trade-off: **these two errors bypass the breaker and bubble straight up.** When a sub-workflow runs away,
+`CircuitBreakerPolicyRef` is not consulted and no fallback is taken. A breaker's semantics are "a business action
+failed, take the alternate path," whereas a DAG cycle is a **structural defect** — letting a fallback swallow it hides
+the bug, and the outer loop might re-enter the same broken sub-workflow repeatedly. Locked down by
+`TestRunawayIsNotSwallowedByACircuitBreaker`.
 
-上限是运行时的最后一道防线；**正常情况下这两类缺陷应该在 `cee validate` 阶段就被拦下**（见 8.4），根本走不到运行时。
+The ceilings are the runtime's last line of defence; **normally both defects should be caught at `cee validate` time**
+(see 8.4) and never reach runtime at all.
 
-### 5.4.1 补偿：探针够不到的那一半
+### 5.4.1 Compensation: the half a probe cannot reach
 
-沙盒探针管的是**别做那个会捅娄子的动作**。但它对这种情况无话可说：
+A sandbox probe handles **don't take the action that would cause trouble**. But it has nothing to say about this:
 
-> 流程走到第 4 步失败了，而第 1、2、3 步已经转了账、订了座、发了货。
+> The process failed at step 4, and steps 1, 2, and 3 already transferred money, reserved a seat, and shipped goods.
 
-断路器要么跳 fallback、要么 trip，两种情况下**前三步的副作用都还留在世界上**。这是"安全执行不可逆操作"这个承诺缺的另一半。
+Whether the breaker jumps to a fallback or trips, **the first three steps' side effects remain in the world**. This is
+the missing half of the promise to "execute irreversible operations safely."
 
-所以 `LeafStep` 可以声明 `CompensateStepRef`（manifest 里是 `compensate_with`），指向同一 workflow 内一个把自己撤销掉的 Step。运行被**放弃**时，引擎回头把已完成且声明了补偿的 Step **逆序**撤销：
+So a `LeafStep` may declare `CompensateStepRef` (`compensate_with` in a manifest), naming a step in the same workflow
+that undoes it. When a run is **abandoned**, the engine unwinds the completed steps that declared a compensation, in
+**reverse order**:
 
 ```
-charge → reserve → issue(失败)
+charge → reserve → issue(fails)
                    ↓
-         release → refund        逆序：先退座，再退款
+         release → refund        reverse: release the seat first, then refund
 ```
 
-逆序不是形式主义——后面的步骤往往建立在前面之上，先撤前面会让后面的补偿面对一个不自洽的世界。
+Reverse order is not ceremony — later steps are usually built on earlier ones, and undoing the earlier ones first
+leaves the later compensation facing an incoherent world.
 
-三条刻意的边界：
+Three deliberate boundaries:
 
-- **只在"放弃"时展开，不是每次失败都展开。** 一个声明了 fallback 的 Step 是在说"我有 B 计划"，走进 B 计划才是预期处理，把它背后的工作拆掉是错的。由 `TestAFallbackDoesNotTriggerAnUnwind` 锁住。
-- **补偿失败绝不重试，也绝不吞掉。** 它会被收集进 `CircuitBreakerTripped.CompensationFailures`，并在错误文本里以 `COULD NOT UNDO` 的形式出现——**动作发生了、撤销也失败了，世界处在一个没人选择的状态，这是引擎能报告的最坏情况**，只有人能解决。
-- **结构性错误不触发补偿。** DAG 成环、挂起配置错误这类问题说明**流程的形状本身是错的**，照着一个不可信的描述去执行撤销动作，比不撤更危险。
+- **It unwinds only on abandonment, not on every failure.** A step declaring a fallback is saying "I have a plan B,"
+  and entering plan B is the expected handling; tearing down the work behind it would be wrong. Locked down by
+  `TestAFallbackDoesNotTriggerAnUnwind`.
+- **A failed compensation is never retried and never swallowed.** It is collected into
+  `CircuitBreakerTripped.CompensationFailures` and appears in the error text as `COULD NOT UNDO` — **the action
+  happened, undoing it also failed, and the world is in a state nobody chose. That is the worst outcome the engine can
+  report**, and only a person can resolve it.
+- **Structural errors do not trigger compensation.** A DAG cycle or a misconfigured suspension means **the shape of
+  the process itself is wrong**, and executing undo actions from an untrustworthy description is more dangerous than
+  not undoing at all.
 
-没有声明补偿的 Step 会被如实报告为"撤不了"，而不是静默跳过——发出去的邮件收不回来，假装能收回比承认收不回更糟。
+A step that declared no compensation is honestly reported as "cannot be undone" rather than silently skipped — an
+email that was sent cannot be recalled, and pretending it can is worse than admitting it cannot.
 
-`cee validate` 会静态拦下悬空的 `compensate_with` 和自我指向：**一个悬空的补偿比没有补偿更糟**，流程会以为自己可回滚，直到放弃运行的那一刻才发现不能。
+`cee validate` statically rejects dangling `compensate_with` references and self-references: **a dangling compensation
+is worse than none**, because the process believes it is rollback-safe right up until the moment it is abandoned.
 
-### 5.5 挂起与恢复：等人不是失败
+### 5.5 Suspend and resume: waiting for a person is not failure
 
-一个流程走到"要等外面某件事"（人工审批、回调、时间窗口）时，5.2 的两条出边都不合适：它没成功，但也**不是失败**——用断路器兜等于把"等待"当成"出错"，等待这件事就被静默丢掉了。
+When a process reaches "wait for something outside" (human approval, a callback, a time window), neither out-edge in
+5.2 fits: it has not succeeded, but it has **not failed** either. Absorbing it with a breaker treats "waiting" as "an
+error," and the waiting is silently dropped.
 
-所以有第三条出边：Action 返回 `*Suspended`。
+Hence a third out-edge: the action returns `*Suspended`.
 
 ```go
-// Go 里：
+// in Go:
 return execution.Suspend("awaiting human approval")
 ```
 ```json
-// 无代码 manifest 里：
+// in a no-code manifest:
 {"step_id": "hold_for_human", "type": "leaf", "action_ref": "std.suspend",
  "with": {"reason": "awaiting manager decision"}, "on_success": "apply_decision"}
 ```
 
-用 error 作为控制信号沿用的是标准库 `fs.SkipDir` 的先例：它靠类型被识别，不是故障。引擎看到它**不查断路器、不跳 fallback、不重试**，而是：
+Using an error as a control signal follows the standard library's precedent with `fs.SkipDir`: it is recognised by
+type, and is not a fault. On seeing it the engine **does not consult the breaker, take a fallback, or retry**.
+Instead it:
 
-1. 把当前 `ctx`、`trace`、挂起点的 `StepID` 和 `Reason` 存进 `Store`；
-2. 生成一个 `crypto/rand` 的不可猜测指针，回填到 `WorkflowResult.StatePointer`。**跑完的流程这个字段是空的**，所以 `StatePointer != ""` 就是"这次跑是不是被挂起了"的判据，没有别的含义。（早期它在正常完成时会回填 `workflowRef`，那时挂起功能还不存在；两种含义挤在一个字段里，会让这个最自然的判断对每一次正常完成都悄悄给出错误答案。）
-3. 正常返回（`err == nil`）——挂起不是错误。
+1. Saves the current `ctx`, `trace`, and the suspension point's `StepID` and `Reason` into the `Store`;
+2. Generates an unguessable `crypto/rand` pointer and fills in `WorkflowResult.StatePointer`. **A completed run leaves
+   this field empty**, so `StatePointer != ""` is exactly the test for "did this run park?" and means nothing else.
+   (It used to be filled with `workflowRef` on normal completion, from before suspension existed. Two meanings crammed
+   into one field made the most natural test silently wrong for every normal completion.)
+3. Returns normally (`err == nil`) — parking is not an error.
 
-`Engine.Resume(pointer, resolution)` 把外部的决定 `resolution` 合并进存下来的 ctx，**从挂起那个 Step 的 `OnSuccess` 继续**（等待已经结束，挂起点本身不重跑）。
+`Engine.Resume(pointer, resolution)` merges the external decision into the saved context and **continues from the
+suspended step's `OnSuccess`** (the wait is over, so the suspension point itself does not re-run).
 
-几条刻意的约束：
+Several deliberate constraints:
 
-- **指针一次性**：`Resume` 在执行前就把指针从 Store 删掉。同一个审批不能被重放两次。
-- **不配 `Store` 就报错**：没调 `SetStore` 时挂起直接返回 `*NoSuspensionSupport`，而不是退化成普通失败让断路器吞掉。
-- **`Store` 是接口**，两个实现：`execution.MemoryStore`（进程内、并发安全、重启即丢，够开发和测试用）和 `filestore.Store`（落盘、跨重启存活）。`State` 是纯值类型、不含引擎指针，可直接序列化——换实现不动引擎，跟 `Prober` 的安排完全一致。见 5.6。
-- **恢复后无需新原语做分支**：`resolution` 就是普通 context 字段，下一步用 `std.require` 比一下 `approved` 即可，失败经断路器走到"驳回"分支——复用 8.3 那套机制。
+- **The pointer is single-use**: `Resume` removes it from the store before executing. The same approval cannot be
+  replayed.
+- **No `Store` configured is an error**: without `SetStore`, suspension returns `*NoSuspensionSupport` rather than
+  degrading into an ordinary failure a breaker would swallow.
+- **`Store` is an interface** with two implementations: `execution.MemoryStore` (in-process, concurrency-safe, lost on
+  restart — fine for development and tests) and `filestore.Store` (durable, survives restarts). `State` is a pure value
+  type containing no engine pointers, so it serialises directly. Swapping implementations does not touch the engine,
+  exactly as with `Prober`. See 5.6.
+- **No new primitive is needed to branch after resuming**: `resolution` is an ordinary context field, so the next step
+  can compare `approved` with `std.require`, failing through the breaker to a "rejected" branch — reusing the
+  mechanism from 8.3.
 
-完整可运行范例：`examples/human_approval`（零 Go hook 的纯 L1 插件）。它的 trace 跨越挂起仍然是连续的一条：
+A complete runnable example: `examples/human_approval` (a pure L1 plugin with zero Go hooks). Its trace remains one
+continuous line across the suspension:
 
 ```
 [check_threshold hold_for_human apply_decision record_approved]
 ```
 
-### 5.5.1 谁可以恢复：把无记名凭证关掉
+### 5.5.1 Who may resume: turning off the bearer token
 
-恢复指针是 `crypto/rand` 生成的，不可猜测——这挡住了"有人找到它"。它挡不住**有人合法地拿到它**：转发的邮件、粘进群里的链接、日志里的一行。持有即可批准，引擎既没法过问，也没法记录是谁批的。
+The resume pointer is `crypto/rand`-generated and unguessable, which blocks "someone found it." It does not block
+**someone legitimately obtaining it**: a forwarded email, a link pasted into a group chat, a line in a log. Possession
+was approval, and the engine could neither question it nor record who approved.
 
-因此挂起可以声明一个 **audience**——一个领域自定义的、表示"谁有权回答"的不透明名字：
+So a suspension may declare an **audience** — a domain-defined opaque name for "who is entitled to answer":
 
 ```go
-return execution.SuspendFor("金额超限，需经理批准", "finance-manager")
+return execution.SuspendFor("amount over limit, needs manager approval", "finance-manager")
 ```
 ```json
 {"action_ref": "std.suspend",
- "with": {"reason": "金额超限", "audience": "finance-manager"}}
+ "with": {"reason": "amount over limit", "audience": "finance-manager"}}
 ```
 
-引擎**从不解释** audience，只把它连同调用方声称的身份交给领域提供的 `Authorizer`——跟它把探针请求交给 `Prober` 是同一种安排。恢复时用 `ResumeAs(pointer, identity, resolution)`。
+The engine **never interprets** the audience. It hands it, along with the identity the caller claims, to the
+`Authorizer` the domain provides — the same arrangement as handing probe requests to a `Prober`. Resuming uses
+`ResumeAs(pointer, identity, resolution)`.
 
-三条让它有意义而不是装饰的规则：
+Three rules make this meaningful rather than decorative:
 
-- **默认拒绝**。声明了 audience 的挂起，在没有配置 `Authorizer` 的引擎上**一律拒绝**。静默放行会让这条声明退化成注释。由 `TestAnAudiencedSuspensionFailsClosedWithNoAuthorizer` 锁住。
-- **拒绝不消耗指针**。否则任何拿到链接的人只要"没有权限"就能把一笔待批准销毁掉——**访问控制会变成拒绝服务**。授权检查因此排在 `Consume` 之前。由 `TestARefusalDoesNotConsumeThePointer` 锁住。
-- **授权器报错等于拒绝**。连不上目录服务的授权器**没有说"是"**，而且待批准必须留着。
+- **Deny by default.** A suspension declaring an audience is **always refused** on an engine with no `Authorizer`
+  configured. Silently allowing it would reduce the declaration to a comment. Locked down by
+  `TestAnAudiencedSuspensionFailsClosedWithNoAuthorizer`.
+- **A refusal does not consume the pointer.** Otherwise anyone holding the link could destroy a pending approval
+  simply by lacking permission — **access control would become denial of service.** The authorisation check therefore
+  runs before `Consume`. Locked down by `TestARefusalDoesNotConsumeThePointer`.
+- **An authorizer error is a refusal.** An authorizer that cannot reach the directory service **has not said yes**, and
+  the pending approval must be preserved.
 
-批准者身份写进恢复后的 context（`cee.resumed_by`）——**一个决定需要有作者，而不只有结果**。
+The approver's identity is written into the resumed context (`cee.resumed_by`) — **a decision needs an author, not
+just an outcome.**
 
-引擎**不认证**这个身份：证明"你是谁"属于引擎前面那层服务，在这里把一个未经验证的字符串当成凭据，比不问更糟。引擎保证的是：声明了 audience 的挂起，不经领域授权器点头不会被恢复，且答复者被记录在案。
+The engine **does not authenticate** that identity: proving who you are belongs to the service in front of the engine,
+and treating an unverified string as proof here would be worse than not asking. What the engine guarantees is that a
+suspension declaring an audience is not resumed without the domain authorizer agreeing, and that whoever answered is
+on the record.
 
-没有声明 audience 的工作流行为完全不变。
+Workflows that declare no audience behave exactly as before.
 
-### 5.6 落盘的 Store（`filestore`）
+### 5.6 The durable store (`filestore`)
 
-`MemoryStore` 重启即丢，而"等人工审批"天然跨小时甚至跨天——一个重启就丢光待审批队列的审批流实际上没法用。`filestore.Store` 把每个挂起的流程按恢复指针存成一个 JSON 文件：
+`MemoryStore` is lost on restart, and "wait for human approval" naturally spans hours or days — an approval flow that
+loses its whole pending queue on one restart is unusable in practice. `filestore.Store` writes each suspended process
+to a JSON file named by its resume pointer:
 
 ```go
-store, err := filestore.New("./state")   // 目录 0700，文件 0600
+store, err := filestore.New("./state")   // directory 0700, files 0600
 engine.SetStore(store)
 ```
 
-它放在独立包而不是 `execution` 里，理由跟 `sandbox` 一样：引擎只依赖 `Store` 接口，文件 I/O 不该进引擎内核。
+It lives in its own package rather than in `execution` for the same reason as `sandbox`: the engine depends only on
+the `Store` interface, and file I/O does not belong in the engine kernel.
 
-几个实现上的决定：
+Several implementation decisions:
 
-- **原子写**：先写临时文件、`Sync` 落盘、再 `rename`。`rename` 在 POSIX 上是原子的，所以读者要么看到旧文件要么看到新文件，永远读不到写了一半的状态；写到一半崩溃也只是留下临时文件，原状态完好。先 `Sync` 再 `rename` 是必要的——这个 Store 存在的意义就是扛崩溃，而"改名先于内容落盘"扛不住崩溃。
-- **指针即文件名，所以指针必须校验**。`Load`/`Delete` 的 pointer 是从外部来的（CLI 参数、HTTP 参数），直接当文件名用就是拿不可信输入拼路径。`checkPointer` 把它限制在 `[A-Za-z0-9_-]`，于是分隔符、`..`、NUL、绝对路径都进不来。校验的是字符集而不是"必须是 32 位十六进制"，这样引擎将来换指针格式也不会连带失效。
-- **`Delete` 一个已经没有的指针要报错**，不能静默成功——引擎正是靠 `Delete` 保证审批不可重放，这里吞掉错误等于把一次重复恢复藏起来。
-- **`Pending()` 跳过坏文件而不是整体失败**：一个损坏的文件不该让运维看不见其余所有待审批项。
-- **权限**：目录 `0700`、文件 `0600`。挂起状态里带着业务上下文（金额、姓名、主机名），不该是全局可读的。
+- **Atomic writes**: write a temp file, `Sync` it to disk, then `rename`. `rename` is atomic on POSIX, so a reader sees
+  either the old file or the new one and never a half-written state; a crash mid-write leaves only a temp file, with
+  the original state intact. `Sync` before `rename` is necessary — this store exists to survive crashes, and
+  "rename lands before contents" does not.
+- **The pointer is the filename, so the pointer must be validated.** The pointer passed to `Load`/`Delete` comes from
+  outside (a CLI argument, an HTTP parameter), and using it directly as a filename is building a path from untrusted
+  input. `checkPointer` restricts it to `[A-Za-z0-9_-]`, so separators, `..`, NUL, and absolute paths cannot get
+  through. It validates the character set rather than "must be 32 hex digits," so a future change to the pointer format
+  does not break it.
+- **`Delete` on a pointer that no longer exists must error**, never silently succeed — the engine relies on `Delete` to
+  guarantee approvals cannot be replayed, and swallowing the error here hides a duplicate resume.
+- **`Pending()` skips corrupt files rather than failing wholesale**: one damaged file should not blind an operator to
+  every other pending item.
+- **Permissions**: directory `0700`, files `0600`. Suspended state carries business context (amounts, names,
+  hostnames) and should not be world-readable.
 
-**一个必须知道的取舍**：`State.Ctx` 是 `map[string]any`，经 JSON 往返后**所有数字都变成 `float64`**。标准动作不受影响（`stdlib` 的比较统一走 `toFloat`），但一个 Go Hook 如果在恢复后写 `ctx["n"].(int)` 会 panic。要么断言 `float64`，要么别把非 JSON 原生类型放进会挂起的流程的 context 里。这条行为由 `TestNumbersComeBackAsFloat64` 钉住，不会悄悄改变。
+**One trade-off you must know about**: `State.Ctx` is a `map[string]any`, and after a JSON round trip **every number
+becomes a `float64`**. Standard actions are unaffected (`stdlib` comparisons all go through `toFloat`), but a Go hook
+writing `ctx["n"].(int)` after a resume will panic. Either assert `float64`, or keep non-JSON-native types out of the
+context of a process that can suspend. This behaviour is pinned by `TestNumbersComeBackAsFloat64` and will not change
+quietly.
 
-### 5.7 `Consume`：把"取用"做成一个不可分割的动作
+### 5.7 `Consume`: making "taking" one indivisible action
 
-`Store` 接口上**没有 `Delete`**，取用一个指针只有一个办法：`Consume(pointer) (State, error)`，原子地"读出并移除"。
+The `Store` interface has **no `Delete`**. There is exactly one way to take a pointer: `Consume(pointer) (State,
+error)`, which atomically reads and removes.
 
-这不是因为原来的 `Load` + `Delete` 有竞态——它其实是安全的，`unlink`/`os.Remove` 本身就是原子的，两个进程同时删同一个文件只有一个成功，另一个拿到 `ENOENT` 而不会继续往下跑。**真正的风险在于这个正确性来自实现细节，而不是接口约定**：一个后来者写 Redis 或 SQL 后端时，很容易把 `Delete` 写成"删掉就行、不报告有没有删到"，那一刻"审批不可重放"就悄悄失效了，而且不会有任何东西报错。`MemoryStore` 一开始就正是这么写的。
+This is not because the original `Load` + `Delete` had a race — it was actually safe, since `unlink`/`os.Remove` is
+itself atomic, and when two processes delete the same file only one succeeds while the other gets `ENOENT` and stops.
+**The real risk is that this correctness came from an implementation detail rather than the interface contract**:
+someone later writing a Redis or SQL backend could easily implement `Delete` as "just delete it, don't report whether
+anything was there," and at that moment "approvals cannot be replayed" silently stops holding, with nothing raising an
+error. `MemoryStore` was originally written exactly that way.
 
-所以接口只暴露原子操作：实现者没有机会把它拆成一对看起来没问题的调用。附带好处是网络后端少一次往返。
+So the interface exposes only the atomic operation: an implementer has no opportunity to split it into a pair of calls
+that look fine. A side benefit is one fewer round trip for network backends.
 
-`filestore` 的实现是 `rename` 抢占：把 `<pointer>` 改名成 `<pointer>.<随机>.claimed`，POSIX 保证并发的 `rename` 只有一个能成功，其余拿到 `ENOENT`。读完就删掉。
+`filestore` implements it as a `rename` claim: rename `<pointer>` to `<pointer>.<random>.claimed`. POSIX guarantees
+only one concurrent `rename` succeeds; the rest get `ENOENT`. It is deleted after reading.
 
-`Engine.Resume` 的顺序是 **`Load`（只读校验）→ `Consume`（原子抢占）→ 执行**。用不抢占的 `Load` 先校验，是为了让"工作流已经不在注册表里了"这类情况能报错而**不销毁**存档——否则一次部署变更就会把待审批队列吃掉。
+`Engine.Resume`'s order is **`Load` (non-claiming validation) → `Consume` (atomic claim) → execute**. Validating with
+a non-claiming `Load` first lets cases like "that workflow is no longer registered" be reported **without destroying**
+the archive — otherwise one deployment change would eat the pending approval queue.
 
-### 5.8 两阶段取用：崩溃不该让一笔审批凭空消失
+### 5.8 Two-phase claiming: a crash should not make an approval vanish
 
-5.7 的 `Consume` 保证了"同一个指针只能被取走一次"。但它原来取走之后**立刻把状态删掉**，于是留下一个更隐蔽的窟窿：进程 `Consume` 成功、流程跑到一半崩了——那笔待审批既没执行完，也不在存档里，**没有任何痕迹**。
+`Consume` in 5.7 guarantees a pointer can only be taken once. But it originally deleted the state immediately after
+taking it, leaving a subtler hole: a process claims successfully, then crashes halfway through the run — and that
+pending approval is neither finished nor in the archive. **No trace of it at all.**
 
-所以取用改成两阶段：
+So claiming became two-phase:
 
-| 阶段 | 做什么 |
+| Phase | What it does |
 |---|---|
-| `Consume` | 原子抢占，把 `<pointer>` 改名成 `<pointer>.<随机>.claimed`，**保留不删** |
-| `Release` | 恢复的流程跑完之后才真正删掉 claim |
+| `Consume` | Atomically claim, renaming `<pointer>` to `<pointer>.<random>.claimed`, **keeping it** |
+| `Release` | Actually delete the claim, only after the resumed run finishes |
 
-`Engine.Resume` 在 `runFrom` 返回后**无论成功失败都调 `Release`**——两种情况下决定都已经被执行过了，不能再执行第二次。唯一跳过 `Release` 的路径就是进程死在 `runFrom` 里，而那正是这套机制要记录的情况。
+`Engine.Resume` calls `Release` **on every path out of `runFrom`, success or failure alike** — either way the decision
+has been acted on and must not be acted on twice. The only path that skips `Release` is the process dying inside
+`runFrom`, which is exactly the case this mechanism exists to record.
 
-于是"claim 还躺在那里"就成了一个精确的信号：**有进程取走了这笔活儿，然后没做完**。`filestore.Orphaned(minAge)` 把这些捞出来，带上指针、挂起原因、被取走的时间。
+So "a claim still sitting there" becomes a precise signal: **some process took this work and did not finish it.**
+`filestore.Orphaned(minAge)` surfaces these, with the pointer, the suspension reason, and when it was claimed.
 
-**关键设计决定：`Orphaned` 只报告，不自动重排队。**
+**Key design decision: `Orphaned` only reports; it does not re-queue automatically.**
 
-自动把孤儿放回待办队列是很自然的想法，但它是错的：引擎**没有任何幂等机制**。一个崩溃的流程可能已经把钱转了、把主机隔离了，只是没走完剩下的步骤。把它当成"没做过"重跑一遍，比让它停在那里更糟。所以这里把事实交给运维——哪笔、等什么、什么时候被取走——由人来判断该补做还是该作废。
+Automatically putting orphans back on the queue is the natural idea, and it is wrong: the engine **has no idempotency
+mechanism whatsoever.** A crashed run may already have moved money or isolated a host and simply not finished the
+remaining steps. Re-running it as though it never happened is worse than leaving it stopped. So the facts go to the
+operator — which one, waiting on what, claimed when — and a person decides whether to complete it or void it.
 
-`MemoryStore.Release` 是空实现，这也是诚实的：它随进程一起消失，根本不存在"claim 比进程活得久"这回事，假装有反而是承诺了一个内存 map 兑现不了的持久性。
+`MemoryStore.Release` is a no-op, which is also honest: it disappears with the process, so "a claim outliving the
+process" cannot happen, and pretending otherwise would promise durability an in-memory map cannot deliver.
 
-### 5.9 并行与汇合（`ParallelStep`）
+### 5.9 Parallelism and joins (`ParallelStep`)
 
-引擎原本每个 Step 只有一条 `on_success` 出边，于是"三项独立检查同时做，都回来了再决定"这类流程只能拍平成串行，或者掉到 L2 Go Hook 里自己起 goroutine。后者尤其糟：**为了表达一个形状而下沉到 Go，等于绕过了无代码贡献层**，而那一层正是插件生态的前提。
+A step used to have exactly one `on_success` out-edge, so "run three independent checks at once and decide when they
+are all back" had to be flattened into a sequence, or written by hand in an L2 Go hook with its own goroutines. The
+latter is the worse outcome: **dropping to Go in order to express a shape bypasses the no-code contribution tier**,
+which is the precondition for a plugin ecosystem.
 
-`ParallelStep` 声明一组子 workflow 作为分支：
+A `ParallelStep` names a set of sub-workflows as branches:
 
 ```json
 {"step_id": "run_checks", "type": "parallel",
@@ -330,105 +462,143 @@ engine.SetStore(store)
  "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "require_all_clear"}
 ```
 
-每个分支拿到**incoming context 的一份拷贝**，在各自的 goroutine 上跑，结束后汇合。
+Each branch receives **its own copy of the incoming context**, runs on its own goroutine, and the results join
+afterwards.
 
-#### 5.9.1 真并发，但结果与调度无关
+#### 5.9.1 Genuinely concurrent, yet independent of scheduling
 
-这是整节唯一真正困难的地方：确定性是本项目的全部主张，而真并发是丢掉它最自然的方式。
+This is the only genuinely hard part of the section: determinism is the entire thesis, and real concurrency is the
+most natural way to lose it.
 
-所以调度只决定**什么时候做**，从不决定**答案是什么**：
+So scheduling decides only **when** work happens, never **what the answer is**:
 
-- **汇合按声明顺序**，不是完成顺序。
-- **trace 按声明顺序拼接**，不是完成顺序。
+- **Branches join in declaration order**, not completion order.
+- **Traces concatenate in declaration order**, not completion order.
 
-于是一个慢分支和一个快分支，每次跑出来的 trace 和 output 逐字节相同。由 `TestParallelJoinIsDeterministicWhateverTheSchedulingOrder` 锁住——它把同一个流程跑 20 次，其中一个分支故意加了延迟，要求 trace 完全一致。
+A slow branch and a fast one therefore produce byte-identical traces and outputs on every run. Locked down by
+`TestParallelJoinIsDeterministicWhateverTheSchedulingOrder`, which runs one workflow twenty times with a deliberate
+delay in one branch and requires the traces to match exactly.
 
-分支之间**互相看不到对方的写入**（各自从 incoming context 的拷贝出发）。这不是隔离洁癖，而是上面那条"与顺序无关"成立的前提：如果分支能看见彼此，结果就取决于谁先跑到。
+Branches **cannot see each other's writes** (each starts from a copy of the incoming context). This is not isolation
+for its own sake: it is the precondition that makes the order-independence above true rather than usually true. If
+branches could observe each other, the result would depend on which ran first.
 
-#### 5.9.2 两个分支写同一个字段：拒绝，而不是仲裁
+#### 5.9.2 Two branches writing one field: refused, not arbitrated
 
-按声明顺序取胜者是确定性的，但**仍然是错的**——workflow 里没有任何一句话说过谁该赢。所以引擎报 `*ConflictingBranchWrites` 并拒绝汇合。
+Picking a winner by declaration order would be deterministic and **still wrong** — nothing in the workflow says which
+should win. So the engine reports `*ConflictingBranchWrites` and refuses to join.
 
-判定基于**每个分支相对 incoming context 的增量**，不是分支输出之间的直接比较。这个区别是必要的：子流程返回的 `Output` 包含它继承的全部 context，所以"A 改了 `status`、B 根本没碰"如果按输出比对，会被误判成冲突。
+The check is based on **each branch's delta against the incoming context**, not a direct comparison of branch outputs.
+That distinction is necessary: a sub-workflow's `Output` contains all the context it inherited, so "A changed `status`
+and B never touched it" would be misread as a conflict if outputs were compared directly.
 
-- 同字段同值：不算冲突。
-- 一个分支改了、另一个没碰：不算冲突。
-- 同字段不同值：拒绝。
+- Same field, same value: not a conflict.
+- One branch changed it, another left it alone: not a conflict.
+- Same field, different values: refused.
 
-冲突与 `*NoBranches`、失控分支一样**绕过断路器**，理由同 5.4：断路器兜的是业务失败，让 fallback 吞掉一个结构性缺陷等于把 bug 藏起来。由 `TestAConflictIsNotSwallowedByACircuitBreaker` 锁住。
+Conflicts, like `*NoBranches` and a runaway branch, **bypass the circuit breaker**, for the reason given in 5.4: a
+breaker absorbs business failures, and letting a fallback swallow a structural defect hides the bug. Locked down by
+`TestAConflictIsNotSwallowedByACircuitBreaker`.
 
-#### 5.9.3 失败、panic 与挂起
+#### 5.9.3 Failure, panics and suspension
 
-- **等所有分支结束再报**，不提前返回——提前返回会留下还在跑的 goroutine。
-- **每个失败的分支都进报告**，不只是第一个，且按声明顺序排列（`*BranchesFailed`）。运维需要知道三项检查里坏了哪两项。
-- 普通业务失败**走断路器**，`cee.failure_reason` 会带上全部分支的失败原因。
-- **分支 panic 转成 `*BranchPanicked`**。goroutine 里的 panic 无法被调用方 `recover`，会直接杀进程——那是相对现状的倒退（今天一个 panic 的 Action 会一路冒泡到 `Run` 的调用方）。转成错误既保住了原有的影响范围，又能指名是哪个分支。
-- **分支里挂起被拒绝**：分支跑在 `depth+1`，因此沿用 5.5 已有的嵌套挂起限制，返回 `*NestedSuspensionUnsupported`。恢复它需要还原整个 fan-out 的调用栈，而 `State` 没有记录。
+- **Every branch is awaited before anything is reported.** Returning early would leave goroutines still running.
+- **Every failed branch is reported**, not just the first, in declaration order (`*BranchesFailed`). An operator needs
+  to know which two of three checks broke.
+- Ordinary business failures **do reach the breaker**, and `cee.failure_reason` carries every branch's reason.
+- **A panicking branch becomes `*BranchPanicked`.** A panic inside a goroutine cannot be recovered by the caller and
+  would take the process down — a regression against today's behaviour, where a panicking action unwinds to whoever
+  called `Run`. Converting it preserves the existing blast radius and names the branch responsible.
+- **Suspending inside a branch is refused.** Branches run at `depth+1`, so the existing nested-suspension rule from
+  5.5 applies and returns `*NestedSuspensionUnsupported`. Resuming would require reconstructing the whole fan-out call
+  stack, which `State` does not record.
 
-#### 5.9.4 静态校验
+#### 5.9.4 Static validation
 
-`cee validate` 会拦下：分支列表为空、分支指向不存在的 workflow_id、同一个分支列两次（那等于把一个 workflow 跟它自己汇合）。只有一个分支时降为 warning——合法，只是把 composite step 写长了。
+`cee validate` catches an empty branch list, a branch naming no `workflow_id`, and the same branch listed twice (which
+would join a workflow against itself). A single branch is a warning rather than an error — legal, just a composite
+step spelled the long way.
 
-**环检测会跟着分支边走**：分支指回自己的父 workflow 是一个跨 workflow 的环，运行时会栈溢出，所以必须在校验期拦下。由 `TestValidateCatchesACycleThroughABranch` 锁住。
+**Cycle detection follows branch edges**: a branch pointing back at its own parent is a cross-workflow cycle that
+overflows the stack at runtime, so it has to be caught during validation. Locked down by
+`TestValidateCatchesACycleThroughABranch`.
 
-完整的无代码范例见 `examples/manifests/onboarding-checks.json`：三项独立筛查 fan-out 再汇合，然后两道阈值，全程零 Go。
+A complete no-code example is `examples/manifests/onboarding-checks.json`: three independent screening checks fanned
+out and joined, then two thresholds, with no Go at all.
 
-## 6. 边缘 LLM 注入器（`llminjector`）
+## 6. Edge LLM injector (`llminjector`)
 
-`Injector.Extract` 的核心行为不是"调用 LLM"，而是**过滤 LLM 的输出**：
+The core behaviour of `Injector.Extract` is not "call an LLM" but **filter the LLM's output**:
 
 ```go
 clean := make(map[string]any, len(reg.schema))
 for field, wantType := range reg.schema {
     value, present := payload[field]
     ...
-    clean[field] = value   // 只拷贝 schema 里声明过的字段
+    clean[field] = value   // only copy fields the schema declared
 }
 ```
 
-即使注册的 `Extractor` 函数在返回值里夹带了 schema 之外的字段（例如一个"is_fraud"这样的决策型字段），`clean` 也不会包含它——这条边界红线是接口行为本身保证的，不依赖人工审查 Extractor 的实现（见 `TestExtractionStripsUnschemaFields`）。`FieldType` 目前只支持 `FieldString`/`FieldFloat64`/`FieldBool` 三种最小可用类型。
+Even if the registered `Extractor` smuggles fields outside the schema into its return value (a decision field like
+`is_fraud`, say), `clean` will not contain it — this red line is guaranteed by the interface's behaviour and does not
+depend on manually reviewing extractor implementations (see `TestExtractionStripsUnschemaFields`). `FieldType`
+currently supports the three minimal usable types `FieldString`/`FieldFloat64`/`FieldBool`.
 
-## 7. 预执行沙盒（`sandbox`）
+## 7. Pre-execution sandbox (`sandbox`)
 
-`Sandbox.Probe` 满足 `execution.Prober` 接口，内部只是把 `ProbeRequest.StepContext` 转发给注册的 `Probe` 函数（`func(map[string]any) (healthy bool, failureMode string, err error)`）并统一折叠成 `ProbeResult`——探针返回 Go error 和探针返回 `healthy=false` 被引擎视为同一件事，调用方只需要处理一条失败路径。当前实现是进程内直接调用，尚未接入真正的隔离环境（E2B/Docker）；`Prober` 接口保证了替换实现不影响 `execution.Engine`。
+`Sandbox.Probe` satisfies `execution.Prober`. Internally it just forwards `ProbeRequest.StepContext` to the registered
+`Probe` function (`func(map[string]any) (healthy bool, failureMode string, err error)`) and folds the outcome into a
+single `ProbeResult` — a probe returning a Go error and a probe returning `healthy=false` are treated identically by
+the engine, so the caller handles one failure path. The current implementation is a direct in-process call and is not
+yet wired to a genuinely isolated environment in the core; the `Prober` interface guarantees that swapping the
+implementation (for `satellites/dockersandbox` or `satellites/httpsandbox`) does not affect `execution.Engine`.
 
-## 8. 标准动作库与无代码贡献层（`stdlib` + `cmd/cee`）
+## 8. Standard action library and the no-code tier (`stdlib` + `cmd/cee`)
 
-前七节描述的是"引擎怎么跑"。这一节描述的是"别人怎么接进来"——两者是正交的：一个插件作者完全不需要理解 5.2 的执行循环，也能发布一个可运行的领域插件。
+Sections 1–7 describe how the engine runs. This section describes how other people plug in — the two are orthogonal: a
+plugin author can publish a working domain plugin without ever understanding the execution loop in 5.2.
 
-### 8.1 两级贡献门槛
+### 8.1 Two contribution tiers
 
-| 层级 | 作者要会什么 | 交付物 |
+| Tier | What the author must know | Deliverable |
 |---|---|---|
-| L1（无代码） | 只需写 JSON | 一份 manifest，`action_ref` 全部指向 `std.*` 标准动作 |
-| L2（有代码） | 需要写 Go | manifest + `Hooks` map，标准库表达不了的逻辑写成具名 Go 函数 |
+| L1 (no code) | JSON only | One manifest, with every `action_ref` pointing at a `std.*` standard action |
+| L2 (with code) | Go | A manifest plus a `Hooks` map, with logic the standard library cannot express written as named Go functions |
 
-`manifest.Load(data, hooks, std)` 的绑定顺序是**标准库优先，Hooks 兜底**（见 `resolveAction`）：`action_ref` 先在 `std` 里查，查不到再查 `hooks`，两边都没有才报错。所以 L1 和 L2 可以在同一份 manifest 里混用。
+`manifest.Load(data, hooks, std)` binds **standard library first, hooks second** (see `resolveAction`): an
+`action_ref` is looked up in `std` first, then in `hooks`, and only errors if neither has it. So L1 and L2 can be mixed
+in the same manifest.
 
-### 8.2 标准动作的形态：Factory，不是 Action
+### 8.2 The shape of a standard action: a Factory, not an Action
 
-标准动作注册进 `Library` 的不是 `execution.Action` 本身，而是一个 `Factory`：
+What gets registered into a `Library` is not an `execution.Action` but a `Factory`:
 
 ```go
 type Factory func(params map[string]any) (execution.Action, error)
 ```
 
-`Factory` 接收该 Step 的 `"with"` 参数块，**在加载期一次性校验并绑定**，返回一个已经闭包好参数的 `Action`。这带来一个重要性质：**参数写错在 `Load` 阶段就失败，而不是流程跑到一半才炸**——和 `NORMATIVE_HANDBOOK` 第 3 节"manifest 写错应当加载时失败"是同一条原则。
+A `Factory` receives that step's `"with"` parameter block, **validates and binds once at load time**, and returns an
+`Action` with the parameters already closed over. This gives an important property: **a mis-written parameter fails at
+`Load`, not halfway through a run** — the same principle as section 3 of the normative handbook ("a mis-written
+manifest should fail at load time").
 
-当前三个内置动作：
+The current built-in actions:
 
-| 动作 | 作用 | 是否影响控制流 |
+| Action | What it does | Affects control flow? |
 |---|---|---|
-| `std.set` | 把一组固定字段写进输出，用于终态/标记步骤 | 否 |
-| `std.require` | 断言 `field op value`；**不满足则该 Step 失败** | 是——失败走断路器 |
-| `std.rule_check` | 计算 `field op value` 的布尔结果写进 `result_field` | 否，只标注不跳转 |
-| `std.suspend` | 挂起流程等待外部事件（见 5.5），需要 `reason` | 是——但既不成功也不失败，返回恢复指针 |
+| `std.set` | Write a fixed set of fields into the output; used for terminal/marker steps | No |
+| `std.require` | Assert `field op value`; **the step fails if unsatisfied** | Yes — failure goes to the breaker |
+| `std.rule_check` | Compute the boolean result of `field op value` into `result_field` | No — it annotates without branching |
+| `std.suspend` | Suspend the process to wait for an external event (see 5.5); needs `reason` | Yes — but neither succeeds nor fails; returns a resume pointer |
+| `std.require_verified` | Assert that the named fields are not model-derived guesses (see handbook 1.1.2) | Yes — failure goes to the breaker |
 
-支持的 `op`：`eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `in`。数值比较统一走 `toFloat`，所以 JSON 里的 `10000`（`float64`）和 Go 里的 `int` 能正确比较。
+Supported `op` values: `eq` / `neq` / `gt` / `gte` / `lt` / `lte` / `in`. Numeric comparisons all go through
+`toFloat`, so JSON's `10000` (a `float64`) compares correctly against Go's `int`.
 
-### 8.3 无代码怎么表达 if/else：借用断路器
+### 8.3 Expressing if/else without code: borrowing the breaker
 
-引擎本身**没有 if/else 原语**，Step 只有"成功走 `OnSuccess`"和"失败走断路器"两条出边。`std.require` 正是靠这一点来表达分支：
+The engine itself has **no if/else primitive**. A step has two out-edges: "succeed and follow `OnSuccess`" or "fail and
+take the breaker." `std.require` uses exactly this to express branching:
 
 ```json
 {"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
@@ -436,75 +606,137 @@ type Factory func(params map[string]any) (execution.Action, error)
  "circuit_breaker_policy_ref": "route_to_flag", "on_success": "approve"}
 ```
 
-读作："要求金额 ≤ 10000；满足则去 `approve`，不满足则由 `route_to_flag` 策略把我送去 `flag`。"
+Read as: "require amount ≤ 10000; if satisfied go to `approve`, otherwise let the `route_to_flag` policy send me to
+`flag`."
 
-这不是把断路器当分支语句滥用——而是一个刻意的设计取舍：**分支和异常兜底本来就共用同一条"偏离主干路径"的出边**，合并成一个机制意味着治理者审计"这个流程有哪些非主干出口"时，只需要看策略表一处（对应 5.3）。代价是可读性略绕，需要靠 `PolicyID` 命名（`route_to_flag`）把意图说清楚。
+This is not abusing the breaker as a branch statement — it is a deliberate trade-off: **branching and exception
+handling already share the same "deviate from the main path" out-edge**, and merging them into one mechanism means a
+governance owner auditing "what non-main-path exits does this process have" only has to look at the policy table
+(per 5.3). The cost is slightly indirect readability, which `PolicyID` naming (`route_to_flag`) has to carry.
 
-完整可运行例子见 `examples/manifests/expense-guard.json`。
+A complete runnable example: `examples/manifests/expense-guard.json`.
 
-### 8.4 静态校验（`manifest.Validate` + `cee validate`）
+### 8.4 Static validation (`manifest.Validate` + `cee validate`)
 
-`Validate(data, std)` 不执行任何东西，只做结构与引用完整性检查，产出 `Report`（`Error` 让 `Report.OK()` 为 false，`Warning` 不会）。当前覆盖：
+`Validate(data, std)` executes nothing; it checks structural and reference integrity, producing a `Report` (an `Error`
+makes `Report.OK()` false; a `Warning` does not). Current coverage:
 
-- `entry_step_id` / `on_success` 指向的 Step 是否真的存在于本 workflow
-- `circuit_breaker_policy_ref` 是否是已声明策略，且其 `fallback_step_ref` 是否存在于本 workflow
-- `sub_workflow_ref` / `intent.entry_workflow_ref` 是否对得上某个 `workflow_id`（旧名 `entry_step_ref` 仍接受，但会报 deprecated 警告）
-- `step_id` 重复、缺 `action_ref`、未知 `type`
-- 标准动作的 `with` 参数是否合法（直接调 `Factory` 试绑定）
-- **`on_success` 成环**（报错）——这条路一定会让 `Run` 空转到撞上限，报告里会把环的路径打出来，形如 `a -> b -> a`
-- **`sub_workflow_ref` 成环**（报错）——比上一条更严重，运行时会栈溢出直接杀进程，所以必拦
-- 只警告不报错的四类：`node_id` 缺域前缀；`action_ref` 不是标准动作（它是否存在只能等 `Load` 时对着 Hooks 验）；**从 `entry_step_id` 走不到的孤儿 Step**；**只有经断路器 fallback 才闭合的环**
+- Whether the steps named by `entry_step_id` / `on_success` actually exist in this workflow
+- Whether `circuit_breaker_policy_ref` names a declared policy, and whether its `fallback_step_ref` exists in this
+  workflow
+- Whether `sub_workflow_ref` / `intent.entry_workflow_ref` resolve to some `workflow_id` (the old name
+  `entry_step_ref` is still accepted, with a deprecation warning)
+- Duplicate `step_id`, missing `action_ref`, unknown `type`
+- Whether a standard action's `with` parameters are valid (by calling the `Factory` to attempt binding)
+- **`on_success` cycles** (error) — this path will certainly spin `Run` until it hits the ceiling; the report prints
+  the cycle path, in the form `a -> b -> a`
+- **`sub_workflow_ref` cycles** (error) — worse than the previous one, since at runtime it overflows the stack and
+  kills the process, so it must be caught
+- Four warning-only categories: a `node_id` missing its domain prefix; an `action_ref` that is not a standard action
+  (whether it exists can only be checked against hooks at `Load` time); **orphan steps unreachable from
+  `entry_step_id`**; and **cycles that close only through a breaker fallback**
 
-最后一条的分级值得说明：`on_success` 是成功就走的边，成环则**必然**空转，所以是 error；而 fallback 边只在失败时才走，成环意味着"反复失败才会转起来"——它确实可能不终止，但需要条件触发，判成 error 会误伤合法设计，所以降为 warning。这个分级由 `TestValidateWarnsButDoesNotFailOnFallbackLoop` 锁住。
+The severity split on the last one is worth explaining: `on_success` is the edge taken on success, so a cycle there
+**necessarily** spins — hence an error. A fallback edge is taken only on failure, so a cycle there means "it only spins
+if it keeps failing." It could indeed fail to terminate, but requires a triggering condition, and calling it an error
+would flag legitimate designs. Hence a warning. This split is locked down by
+`TestValidateWarnsButDoesNotFailOnFallbackLoop`.
 
-命令行入口：
+Command line:
 
 ```bash
 go run ./cmd/cee validate examples/manifests/expense-guard.json
 ```
 
-退出码 `0` = 无 error，`1` = 有 error，`2` = 用法/读文件出错——可直接用作 CI 门禁。这是把 `NORMATIVE_HANDBOOK` 的部分红线从"人工 Code Review"变成自动化检查的第一步。
+Exit code `0` = no errors, `1` = errors, `2` = usage/file-read problem — usable directly as a CI gate. This is the
+first step in turning some of the normative handbook's red lines from manual code review into automated checks.
 
-## 9. 度量与对标（`scorecard`）
+## 9. Metrics and benchmarking (`scorecard`)
 
-社区要靠"比 Agent 更高效"的**可证数字**、而非口号来积累势能，`scorecard` 就是产出这些数字的地方。
+The community needs **provable numbers** for "more efficient than an agent," not slogans. `scorecard` is where those
+numbers come from.
 
-### 9.1 埋点方式：可选 Observer，零侵入
+### 9.1 Instrumentation: an optional Observer, zero intrusion
 
-`execution.Engine` 和 `llminjector.Injector` 各暴露一个 `SetObserver(...)`，默认 `nil`、零开销。引擎在每个 Step 执行 / 沙盒预演 / 断路器跳转时回调，注入器在每次真正调用抽取器时回调。`scorecard.Recorder` 在**方法集层面**同时满足这两个 Observer 接口——因此 `scorecard` 包**不 import** `execution` 或 `llminjector`，保持叶子地位，不制造反向依赖。
+`execution.Engine` and `llminjector.Injector` each expose a `SetObserver(...)`, defaulting to `nil` with zero
+overhead. The engine calls back on each step execution / sandbox rehearsal / breaker diversion; the injector calls back
+each time it really invokes an extractor. `scorecard.Recorder` satisfies both Observer interfaces **structurally, at
+the method-set level** — so the `scorecard` package **does not import** `execution` or `llminjector`, keeping its leaf
+position and creating no reverse dependency.
 
-### 9.2 基线模型：诚实,不估算 token
+### 9.2 The baseline model: honest, no token estimation
 
-对标模型是刻意选的:**朴素 Agent = 每个 Step 调一次 LLM**。在这个模型下,引擎跑的每一个确定性 Step,恰好就是 CEE 相比 Agent **省掉的一次 LLM 调用**。所以头号指标 `DeterminismRatio = 确定性步数 / (确定性步数 + LLM抽取次数)` 不是估算,而是"本该发生却没发生的 LLM 调用占比"——不需要猜 token 数就成立,等真实 LLM 接进来后只会更精确。
+The comparison model is chosen deliberately: **a naive agent = one LLM call per step.** Under that model, every
+deterministic step the engine runs is exactly **one LLM call CEE eliminated** relative to an agent. So the headline
+metric `DeterminismRatio = deterministic steps / (deterministic steps + LLM extractions)` is not an estimate but "the
+share of LLM calls that should have happened and did not" — it holds without guessing token counts, and only becomes
+more precise once a real LLM is wired in.
 
-被计数的是**实际执行**而非**路径访问**:一个被沙盒拦下、动作没跑成的 Step 不计入确定性步数(它计入沙盒预演 + 断路器)。`examples/security_monitoring` 的场景 2 因此显示"2 确定性步 + 1 预演 + 1 断路"而不是按 trace 的 3 步计——`go run ./examples/security_monitoring` 可直接看到两个场景的实时 Scorecard。
+What is counted is **actual execution**, not path visits: a step blocked by the sandbox whose action never ran does not
+count as a deterministic step (it counts as a sandbox rehearsal plus a breaker trip). Scenario 2 in
+`examples/security_monitoring` therefore shows "2 deterministic steps + 1 rehearsal + 1 breaker" rather than 3 steps by
+trace length — run `go run ./examples/security_monitoring` to see both scenarios' live Scorecards.
 
-## 10. 社区分发（`catalog` + `cee list/lint/install`）
+### 9.3 The error side: diagnostics (`diagnostics`)
 
-`catalog` 是插件生态的最简起点:**没有服务、没有数据库,一个 catalog 就是 `index.json` 加它指向的 manifest 文件**。贡献一个插件 = 一个 PR,没别的。托管式 registry 可以以后在同一个 `Entry` 形状后面再加,现在不做。
+The scorecard measures output — steps run, calls eliminated — which are the flattering numbers. Measuring only those is
+a bias, and it leaves three questions the scorecard structurally cannot answer:
 
-### 10.1 目录形态
+- **intent miss rate** — routing attempts that matched no intent
+- **probe refusal rate** — probes that refused their step
+- **escalation rate** — suspensions per run
+
+`diagnostics.Recorder` aggregates these across many runs, rather than scoring one. Each needed a signal that did not
+exist before: `intentrouter.Observer` (attached with `router.SetObserver`) reports every match outcome — this is the
+mechanism §5.2's routing layer previously lacked; `execution.ProbeOutcomeObserver` (an optional extension of
+`Observer`) reports whether each probe passed or refused, which a bare breaker count cannot separate from a failed
+action or sub-workflow; and escalation reuses the existing suspension signal over a run count the caller supplies with
+`ObserveRun`, because the engine does not decide what a caller counts as one request.
+
+Rates are zero over no data rather than a division by zero — a rate with no denominator is missing data, not a good
+score. Like `scorecard`, the package is a leaf: it satisfies the router and engine observer interfaces structurally and
+imports neither. `examples/security_monitoring` prints an aggregate report alongside its per-event scorecards.
+
+## 10. Community distribution (`catalog` + `cee list/lint/install`)
+
+`catalog` is the simplest possible starting point for a plugin ecosystem: **no service, no database — a catalog is an
+`index.json` plus the manifest files it points at.** Contributing a plugin is one PR, nothing more. A hosted registry
+can be added later behind the same `Entry` shape; it is not being built now.
+
+### 10.1 Directory shape
 
 ```
 catalog/
-  index.json                        列出每个插件:name/description/version/tier/domain/manifest 路径/tags
-  plugins/<name>/manifest.json       实际的插件 manifest（L1 纯声明式的可被完整分发）
+  index.json                         lists each plugin: name/description/version/tier/domain/manifest path/tags
+  plugins/<name>/manifest.json       the actual plugin manifest (pure declarative L1 can be distributed whole)
 ```
 
-仓库自带两个跨领域的 L1 样例:`sla-guard`(支持/运维域)和 `access-review`(安全/合规域),都零 Go 代码,证明多插件多领域在同一 catalog 里共存。
+The repo ships two cross-domain L1 samples: `sla-guard` (support/ops domain) and `access-review` (security/compliance
+domain), both with zero Go code, proving multiple plugins across multiple domains coexist in one catalog.
 
-### 10.2 分发层的两个闸门
+### 10.2 Two gates in the distribution layer
 
-- **`Catalog.Lint`**(`cee lint`):校验整个 catalog——名字唯一、tier 合法、manifest 存在且其声明的 name 与 entry 对得上、且每份 manifest 都过 `manifest.Validate`。它复用 `manifest.Report`,所以 `cee lint` 和 `cee validate` 说同一种"语言",可直接做 CI 门禁。`catalog/catalog_test.go` 里的 `TestRepoCatalogLintsClean` 用 `Load(".")` 守住仓库自带的真实 catalog 必须永远 lint 干净。
-- **`Catalog.Install`**(`cee install`):**先校验再落盘**——一份过不了 `manifest.Validate` 的插件永远不会被写进本地 `plugins/`。这是安装期的质量闸门,`TestInstallRefusesInvalidManifest` 锁住这条。
+- **`Catalog.Lint`** (`cee lint`): validates the whole catalog — names unique, tiers legal, manifests present with
+  their declared name matching the entry, and every manifest passing `manifest.Validate`. It reuses `manifest.Report`,
+  so `cee lint` and `cee validate` speak the same language and both work as CI gates. `TestRepoCatalogLintsClean` in
+  `catalog/catalog_test.go` uses `Load(".")` to ensure the repo's own catalog always lints clean.
+- **`Catalog.Install`** (`cee install`): **validate before writing to disk** — a plugin that fails
+  `manifest.Validate` is never written into the local `plugins/`. This is the install-time quality gate, locked down
+  by `TestInstallRefusesInvalidManifest`.
 
-### 10.3 L1 可作为数据分发,L2 不行
+### 10.3 L1 can be distributed as data; L2 cannot
 
-catalog 携带的是 L1(纯 manifest)插件,可被 `install` 拉下来当数据直接 `manifest.Load` 跑起来(`TestInstallAndRunFromRepoCatalog` 证明了"从 catalog 到活引擎"这条链路)。需要 Go Hook 的 L2 插件仍然走 Go module 分发;`Entry` 可以用 `tier: "L2"` 描述它以便被发现,但 `Install` 只处理它能完整校验的 manifest。
+A catalog carries L1 (pure manifest) plugins, which `install` can pull down and `manifest.Load` can run directly
+(`TestInstallAndRunFromRepoCatalog` proves the "catalog to live engine" path). L2 plugins needing a Go hook still go
+through Go module distribution; an `Entry` can describe one with `tier: "L2"` so it is discoverable, but `Install`
+only handles manifests it can validate completely.
 
-### 10.4 基准跑批与排行榜(`bench` + `cee bench`)
+### 10.4 Benchmark batches and the leaderboard (`bench` + `cee bench`)
 
-"比 Agent 高效"要变成社区势能,就得是**可攀比的榜单数字**而非断言。每个插件可以在 entry 里声明一个 `benchmark` 字段,指向一份标准事件集(`plugins/<name>/benchmark.json`:一组 `{workflow_ref, context}`)。`cee bench` 把每个插件的事件批量跑过一个挂了 `scorecard.Recorder` 的引擎,聚合成一份 `bench.Result`,再按确定性比率排名输出:
+For "more efficient than an agent" to become community momentum, it has to be **a leaderboard people can compete on**,
+not an assertion. A plugin can declare a `benchmark` field in its entry, pointing at a standard event set
+(`plugins/<name>/benchmark.json`: a set of `{workflow_ref, context}`). `cee bench` runs each plugin's events through an
+engine with a `scorecard.Recorder` attached, aggregates them into a `bench.Result`, and ranks by determinism ratio:
 
 ```
 rank plugin           determinism  events   errors   LLM calls eliminated vs agent
@@ -512,23 +744,66 @@ rank plugin           determinism  events   errors   LLM calls eliminated vs age
 2    sla-guard        100%         4        0        8 of 8
 ```
 
-排名口径复用 9.2 的诚实基线:聚合确定性比率 = 相比"每步一次 LLM 调用"的 Agent 所消除的调用比例。单个事件出错(如断路器无 fallback)只计入 `Errors` 并继续,一个坏事件不会掩盖整批数字(`bench.Run` 保证)。这是把 Scorecard 从"单次度量"变成"跨插件、可排序、可炫耀"的社会化机制的第一步——托管式排行榜、真实 token 维度、Agent 实跑对照组都还在路线图上。
+The ranking reuses the honest baseline from 9.2: the aggregate determinism ratio is the share of calls eliminated
+versus an agent making one LLM call per step. A single failing event (a breaker with no fallback, say) counts into
+`Errors` and execution continues, so one bad event cannot obscure the batch (guaranteed by `bench.Run`). This is the
+first step in turning the Scorecard from a single measurement into a cross-plugin, sortable, brag-worthy social
+mechanism — a hosted leaderboard, real token dimensions, and a live agent control group are all still on the roadmap.
 
-## 11. 当前范围与已知限制
+## 11. Current scope and known limitations
 
-以下内容**尚未实现**，属于路线图但不在当前代码里，避免与实际状态混淆：
+The following are **not implemented** — roadmap items, not present in the code — stated to avoid confusion with the
+actual state:
 
-- **Agent 兜底层**：此前讨论过"LLM 抽取连续失败后转受限 Agent 兜底"的两级升级机制，已明确决定不做，当前抽取失败直接由调用方决定下一步（通常是转人工），引擎本身不内置这一层。
-- **真实后端**：**这一条已大部分兑现，仅沙盒的内置实现仍是进程内模拟**。`llminjector` 可挂 `llmhttp`（真实 OpenAI 兼容端点）、`intentrouter` 可挂 `embedhttp`（真实 embedding 语义匹配）、`execution.Store` 可挂 `filestore`（落盘、跨重启存活）、`execution.Prober` 可挂 `satellites/dockersandbox`（本地容器）或 `satellites/httpsandbox`（远程/云沙盒）。核心内置的 `sandbox.Sandbox` 仍是进程内直接调用，用于开发与测试。分布式编排（Temporal 类语义）**明确不做**，见第 6 章适用边界。
-- **场景模板库**：六类元场景（异常检测、审批流、数据同步、工单路由、调度、安全监测）**均已落地为可运行示例**（见 `examples/`），另含两个真实案例（网络入侵检测、市场异常监控）。**尚未做的是把它们抽象成可复用的模板包**——目前每个都是独立示例，新接入者要照着改，而不是填参数。
-- **挂起没有 TTL 与超时转派**：等待没有尽头，见下面 `filestore` 那条。
-- **热加载仍未提供**：`Engine` 的注册路径现在有 `RWMutex` 保护，运行中注册不再是数据竞争；但仓库没有提供监听目录、发现新 manifest 并重新注册的机制。锁是前置条件，不是热加载本身。
-- **Observer 现在必须并发安全**：分支并发执行意味着 `Observer` 会被多个 goroutine 同时回调。仓库内的 `scorecard.Recorder` 和 `replay.Recorder` 都持有锁；第三方实现需要自行保证。
-- **嵌套挂起**：挂起（见 5.5）目前只支持顶层工作流。子流程里的 Step 挂起会直接报 `*NestedSuspensionUnsupported`——恢复它需要还原整个 composite 调用栈，而当前 `State` 没有记录栈帧。这是刻意拒绝而不是勉强恢复：恢复到一个没人说得清的中间态比直接报错更糟。
-- **`filestore` 没有过期回收**：挂起的流程会一直躺在目录里。一个永远等不到审批的流程不会自己消失，也没有 TTL 或归档机制——运维得自己拿 `Pending()` 做清理。
-- **`filestore` 不做跨进程加锁**，但**"一次性"保证本身是跨进程成立的**——见 5.7，它靠的是 `rename`/`unlink` 的原子性，不需要锁。缺的是公平性（谁先到谁拿到），以及"孤儿要靠人来判"（见 5.8，这是刻意的，不是遗漏）。
-- **跨 manifest 的环**：环检测只在**单个 manifest 内部**做（见 5.4）。如果 A 域的 composite step 指向 B 域的 workflow、B 又指回 A，`Validate` 看不见——它一次只读一份文件。这种跨域环最终由引擎的深度上限兜住，但不会在校验阶段被提前发现。
-- **标准动作库的覆盖面**：`stdlib` 目前有 `set`/`require`/`rule_check`/`suspend`/`require_verified` 五个动作，够表达"阈值判断 + 打标 + 等人 + 拒绝猜测值"这类流程，但**没有任何 I/O 类动作**（HTTP 调用、读数据库）。L1 无代码层因此还只能做纯计算流程，真正要碰外部系统仍然必须下沉到 L2 写 Go Hook。
-- **Scorecard 的 token 维度**：`scorecard` 度量的是操作计数（确定性步数 / LLM 调用次数）与耗时，`DeterminismRatio` 在"每步一次 LLM 调用"的基线下成立且真实。排行榜与基准套件**已经落地**（`bench` 包 + `cee bench`），但两件事仍然没有：**真实的 token 消耗数**，以及**Agent 实跑对照组**。因此"省了多少钱"这个问题目前只能用调用次数回答，不能用金额回答。
-- **只量产出，未量误差**：`scorecard` 量的是确定性步数、消除的调用数——都是好看的数字。意图未命中率、探针拒绝率、转人工比例这些**诊断性**指标一个都没有。只量好看的数字是一种概念偏向，这条要当作已知缺陷而不是"以后再说"。
-- **生态**：`catalog` 里目前只有 2 个插件，都是仓库自带的样例，`cee bench` 排行榜上没有第三方条目。无代码贡献层、分发目录、确定性排行榜这套飞轮**架构已就绪，燃料为零**。
+- **Agent fallback tier**: a two-stage escalation ("after repeated extraction failures, fall back to a constrained
+  agent") was discussed and explicitly decided against. Extraction failure currently leaves the next move to the
+  caller (usually escalation to a human); the engine does not build this in.
+- **Real backends**: **mostly delivered; only the built-in sandbox is still an in-process simulation.**
+  `llminjector` can attach `llmhttp` (a real OpenAI-compatible endpoint); `intentrouter` can attach `embedhttp` (real
+  embedding semantic matching); `execution.Store` can attach `filestore` (durable, survives restarts);
+  `execution.Prober` can attach `satellites/dockersandbox` (local container) or `satellites/httpsandbox` (remote/cloud
+  sandbox). The core's built-in `sandbox.Sandbox` remains a direct in-process call for development and testing.
+  Distributed orchestration (Temporal-style semantics) is **explicitly out of scope**.
+- **Scenario template library**: all six meta-scenarios (anomaly detection, approval flows, data sync, ticket routing,
+  scheduling, security monitoring) **have landed as runnable examples** (see `examples/`), plus two real cases
+  (network intrusion detection, market surveillance). **What has not been done is abstracting them into reusable
+  template packages** — each is currently a standalone example that a new adopter modifies by hand, rather than
+  parameterises.
+- **No suspension TTL or timeout escalation**: waiting has no end — see the `filestore` note below.
+- **Hot-loading is still not provided**: the engine's registration path is now guarded by an `RWMutex`, so registering
+  while running is no longer a data race. But nothing in the repo watches a directory, discovers new manifests and
+  re-registers them. The lock was the precondition, not the feature.
+- **Observers must now be concurrency-safe**: branches run concurrently, so an `Observer` is called from several
+  goroutines at once. Both implementations in this repo, `scorecard.Recorder` and `replay.Recorder`, hold mutexes; a
+  third-party implementation has to provide its own safety.
+- **Nested suspension**: suspension (see 5.5) currently supports only top-level workflows. A step suspending inside a
+  sub-workflow returns `*NestedSuspensionUnsupported` — resuming it would require reconstructing the whole composite
+  call stack, and `State` does not record stack frames. This is a deliberate refusal rather than a best-effort
+  recovery: resuming into an intermediate state nobody can describe is worse than erroring out.
+- **`filestore` has no expiry/reclamation**: suspended processes sit in the directory indefinitely. A process that
+  never gets its approval does not disappear on its own, and there is no TTL or archival mechanism — operators must
+  clean up using `Pending()`.
+- **`filestore` does not lock across processes**, but **the single-use guarantee itself does hold across processes** —
+  see 5.7; it relies on the atomicity of `rename`/`unlink` and needs no lock. What is missing is fairness (first come,
+  first served) and the fact that orphans require human judgement (see 5.8 — deliberate, not an oversight).
+- **Cross-manifest cycles**: cycle detection runs **within a single manifest only** (see 5.4). If domain A's composite
+  step points at domain B's workflow and B points back at A, `Validate` cannot see it — it reads one file at a time.
+  Such cross-domain cycles are ultimately caught by the engine's depth ceiling, but are not found early at validation
+  time.
+- **Standard action library coverage**: `stdlib` currently has five actions
+  (`set`/`require`/`rule_check`/`suspend`/`require_verified`), enough to express "threshold check + tagging + wait for
+  a person + reject guessed values," but **no I/O actions at all** (HTTP calls, database reads). The L1 no-code tier
+  can therefore only build pure-computation processes; genuinely touching an external system still requires dropping to
+  L2 and writing a Go hook.
+- **Scorecard's token dimension**: `scorecard` measures operation counts (deterministic steps / LLM calls) and elapsed
+  time. `DeterminismRatio` holds and is genuine under the "one LLM call per step" baseline. The leaderboard and
+  benchmark suite **have landed** (the `bench` package + `cee bench`), but two things still do not exist: **real token
+  consumption figures**, and **a live agent control group**. So "how much money did it save" can currently only be
+  answered in call counts, not currency.
+- **Diagnostic metrics land, aggregation does not persist**: the `diagnostics` package (§9.3) now measures the error
+  side — intent miss rate, probe refusal rate, escalation rate. What it does not yet do is persist or export those
+  counters; a `Recorder` lives in memory for the life of the process, so a long-running deployment needs to scrape or
+  snapshot it itself. There is no metrics endpoint and no time-series output.
+- **Ecosystem**: the `catalog` currently holds 2 plugins, both samples shipped with the repo, and the `cee bench`
+  leaderboard has no third-party entries. The no-code contribution tier, distribution catalog, and determinism
+  leaderboard are **architecturally ready with zero fuel.**

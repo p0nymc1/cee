@@ -1,60 +1,64 @@
-# CEE 开发文档
+# CEE Development Guide
 
-> English: [DEVELOPMENT_GUIDE.en.md](DEVELOPMENT_GUIDE.en.md)
+For people who are going to develop *on* this codebase — whether modifying the engine itself or plugging in a new
+domain plugin. Architecture rationale is in [`TECHNICAL_SPECIFICATION.md`](TECHNICAL_SPECIFICATION.md);
+contribution rules are in [`NORMATIVE_HANDBOOK.md`](NORMATIVE_HANDBOOK.md). This document only covers how to get
+your hands on it.
 
-面向"要在这个代码库上做开发"的人——无论是修改引擎本身，还是接入一个新的领域插件。架构原理见 `TECHNICAL_SPECIFICATION.md`，贡献规则见 `NORMATIVE_HANDBOOK.md`，本文档只讲"怎么动手"。
+## 1. Requirements
 
-## 1. 环境要求
-
-- **Go 1.26 及以上**——`go.mod` 声明的是 `go 1.26.5`，自 Go 1.21 起这是硬下限，更低的工具链会拒绝构建（或按 `GOTOOLCHAIN` 自动下载 1.26，那就需要联网）
-- 无需任何外部依赖——`go.mod` 没有 `require` 条目，`go build`/`go test` 在无网络环境下也能跑（前提是本机 Go 已经 ≥ 1.26）
+- **Go 1.26 or later** — `go.mod` declares `go 1.26.5`, and since Go 1.21 that is a hard floor. Older toolchains
+  refuse to build (or auto-download 1.26 per `GOTOOLCHAIN`, which needs network access).
+- No external dependencies — `go.mod` has no `require` entries, so `go build`/`go test` work offline (provided the
+  local Go is already ≥ 1.26).
 
 ```bash
-go version        # 确认 >= 1.26
-go build ./...     # 编译全部包
-go vet ./...        # 静态检查
-go test ./... -v    # 跑全部测试
-make stats          # 打印文档引用的仓库数字
+go version        # confirm >= 1.26
+go build ./...     # compile every package
+go vet ./...        # static checks
+go test ./... -v    # run every test
+make stats          # print the repo figures the docs quote
 ```
 
-## 2. 项目结构
+## 2. Project layout
 
 ```
 cee/
   go.mod
-  entities/      共享数据契约，所有组件都依赖它，它不依赖任何其他包
-  intentrouter/   意图路由
-  execution/      确定性执行引擎（DAG 走法、断路器）
-  llminjector/    边缘 LLM 抽取器
-  sandbox/        预执行沙盒
-  registry/       领域注册表（把插件接入 Router + Engine）
-  manifest/       JSON 声明式加载器（Load 出 registry.Domain）+ 静态校验器（Validate）
-  stdlib/         标准动作库（std.set / std.require / std.rule_check / std.suspend / std.require_verified）
-  filestore/      落盘的 execution.Store 实现，挂起状态跨重启存活
-  llmhttp/        真实 LLM 后端：net/http 打 OpenAI 兼容端点，产出 llminjector.Extractor
-  embedhttp/      真实语义匹配后端：net/http 打 embedding 端点，产出 intentrouter.Vectorizer
-  replay/         录制/重放非确定性入口（探针 + 抽取），做规则变更的回归 diff
-  draft/          用模型起草 manifest，四道闸门校验
-  httpapi/        可挂载的 http.Handler，默认拒绝匿名
-  scorecard/      度量一次请求：确定性步数 / LLM 调用 / 沙盒 / 断路器 / 耗时
-  catalog/        社区分发层：index.json + plugins/<name>/manifest.json (+ benchmark.json)
-  bench/          基准跑批：把标准事件跑过插件，聚合 Scorecard 并排名
-  cmd/cee/        命令行工具：validate / lint / list / install / bench / draft / serve
-  docs/           本文档所在目录
-  examples/       八个可运行范例，每个都跟仓库一起编译和测试
-    quickstart/            最小接入：退款台（放行 / 挂起等经理 / 探针拦下）
-    rule_change/           改一条规则，重放历史决定，算出哪些会翻转
-    security_monitoring/   L2 范例：Go 插件 + 沙盒门禁 + 断路器降级人工审批
-    network_detection/     ATT&CK 匹配 + 处置爆炸半径护栏
-    crypto_surveillance/   实时行情异常监控（会联网）
-    human_approval/        L1 零 Go：挂起 / 恢复
-    meta_scenarios/        工单路由 / 调度 / 数据同步
-    local_netwatch/        本地连接筛查
-    manifests/             L1 范例：expense-guard.json 等，纯 JSON、零 Go 代码
-  satellites/     独立 go.mod 的卫星模块：dockersandbox / httpsandbox / wasmhooks
+  entities/       shared data contracts; everything depends on it, it depends on nothing
+  intentrouter/   intent routing
+  execution/      deterministic execution engine (DAG walking, circuit breakers)
+  llminjector/    edge LLM extractor
+  sandbox/        pre-execution sandbox
+  registry/       domain registry (plugs a plugin into Router + Engine)
+  manifest/       declarative JSON loader (Load produces a registry.Domain) + static validator (Validate)
+  stdlib/         standard action library (std.set / std.require / std.rule_check / std.suspend / std.require_verified)
+  filestore/      durable execution.Store; suspended state survives restarts
+  llmhttp/        real LLM backend: net/http against an OpenAI-compatible endpoint, produces an llminjector.Extractor
+  embedhttp/      real semantic backend: net/http against an embedding endpoint, produces an intentrouter.Vectorizer
+  replay/         record/replay the non-deterministic entry points (probes + extraction) for rule-change regression diffs
+  draft/          have a model draft a manifest, behind four validation gates
+  httpapi/        a mountable http.Handler; anonymous callers denied by default
+  scorecard/      per-request metrics: deterministic steps / LLM calls / sandbox / breakers / elapsed
+  diagnostics/    cross-run error metrics: intent miss rate / probe refusal rate / escalation rate
+  catalog/        community distribution: index.json + plugins/<name>/manifest.json (+ benchmark.json)
+  bench/          benchmark batches: run standard events through plugins, aggregate Scorecards, rank
+  cmd/cee/        CLI: validate / lint / list / install / bench / draft / serve
+  docs/           this document's directory
+  examples/       eight runnable examples, all compiled and tested with the repo
+    quickstart/            minimal integration: a refund desk (pay / park for a manager / blocked by a probe)
+    rule_change/           change one rule, replay past decisions, compute which flip
+    security_monitoring/   L2 example: Go plugin + sandbox gating + breaker escalation to human review
+    network_detection/     ATT&CK matching + blast-radius guardrails on containment
+    crypto_surveillance/   live market anomaly monitoring (uses the network)
+    human_approval/        L1, zero Go: suspend / resume
+    meta_scenarios/        ticket routing / scheduling / data sync
+    local_netwatch/        local connection screening
+    manifests/             L1 examples: expense-guard.json and others, pure JSON, zero Go
+  satellites/     satellite modules with their own go.mod: dockersandbox / httpsandbox / wasmhooks
 ```
 
-包之间的依赖方向是单向的，不存在循环导入：
+Dependencies between packages are one-directional; there are no import cycles:
 
 ```
 entities  ←  intentrouter, execution, llminjector, sandbox
@@ -65,13 +69,16 @@ stdlib    ←  manifest
 manifest, stdlib  ←  cmd/cee
 ```
 
-`scorecard` 是叶子包：它不 import 任何其他 cee 包，而是靠方法集结构化地满足 `execution.Observer` 和 `llminjector.Observer` 两个接口，所以埋点不会造成 `scorecard → execution` 的反向依赖。
+`scorecard` is a leaf package: it imports no other cee package, satisfying both `execution.Observer` and
+`llminjector.Observer` structurally through its method set. So instrumentation creates no reverse
+`scorecard → execution` dependency.
 
-## 3. 快速开始：从零跑通一个领域
+## 3. Quick start: getting one domain running from scratch
 
-有两种等价的方式定义一个领域插件，最终都产出同一个 `registry.Domain`，可以混用。
+There are two equivalent ways to define a domain plugin. Both produce the same `registry.Domain`, and they can be
+mixed.
 
-### 方式一：手写 Go 结构体（适合需要复杂 Go 逻辑的场景）
+### Option 1: hand-written Go structs (for scenarios needing complex Go logic)
 
 ```go
 package main
@@ -84,8 +91,8 @@ import (
 )
 
 func main() {
-    router := intentrouter.NewRouter(0.5) // 阈值按场景调
-    engine := execution.NewEngine(nil)     // 无沙盒依赖时传 nil
+    router := intentrouter.NewRouter(0.5) // tune the threshold per scenario
+    engine := execution.NewEngine(nil)     // nil when no sandbox is needed
     reg := registry.NewRegistry(router, engine)
 
     reg.RegisterDomain(registry.Domain{
@@ -94,7 +101,7 @@ func main() {
             NodeID:       "finance.duplicate_expense",
             DomainID:     "finance",
             Examples:     []string{"duplicate expense report"},
-            EntryWorkflowRef: "finance.flag_duplicate", // 指向下面某个 Workflow 的 WorkflowID
+            EntryWorkflowRef: "finance.flag_duplicate", // points at a Workflow's WorkflowID below
         }},
         Workflows: []*execution.Workflow{{
             WorkflowID:  "finance.flag_duplicate",
@@ -118,9 +125,9 @@ func main() {
 }
 ```
 
-### 方式二：JSON manifest + 具名 Hooks（适合把 DAG 形状交给非 Go 开发者维护）
+### Option 2: JSON manifest + named hooks (for handing the DAG's shape to non-Go developers)
 
-1. 写一个 manifest 文件（结构参考 `manifest/manifest_test.go` 里的 `financeManifestJSON`）：
+1. Write a manifest file (see `financeManifestJSON` in `manifest/manifest_test.go` for the structure):
 
 ```json
 {
@@ -144,7 +151,7 @@ func main() {
 }
 ```
 
-2. 在 Go 代码里只写"具名函数"，不写 DAG 结构：
+2. In Go, write only the named functions — never the DAG structure:
 
 ```go
 hooks := manifest.Hooks{
@@ -153,19 +160,22 @@ hooks := manifest.Hooks{
     "finance.queue_human_review":  queueHumanReviewAction,
 }
 
-// 第三个参数是标准动作库；manifest 里的 action_ref 会先在标准库里找，
-// 找不到再在 hooks 里找。两者都可为 nil。
+// The third argument is the standard action library. An action_ref in a manifest is looked
+// up in the standard library first, then in hooks. Both may be nil.
 domain, err := manifest.Load(manifestJSONBytes, hooks, stdlib.Default())
 if err != nil {
-    // manifest 引用了一个标准库和 hooks 里都不存在的 action_ref，或 JSON 格式错误，
-    // 或 composite step 缺 sub_workflow_ref —— Load 会明确报错，不会静默生成半个 Domain
+    // The manifest referenced an action_ref present in neither the standard library nor hooks,
+    // or the JSON is malformed, or a composite step is missing sub_workflow_ref. Load errors
+    // explicitly rather than silently producing half a Domain.
 }
 reg.RegisterDomain(*domain)
 ```
 
-### 方式二·补充：纯声明式（零 Go）
+### Option 2 addendum: purely declarative (zero Go)
 
-如果一个流程只用到标准动作库里的通用动作（`std.set`/`std.require`/`std.rule_check`），那么 `hooks` 传 `nil` 即可，插件作者一行 Go 都不用写——这就是社区 L1 贡献层。标准动作靠 manifest 里每个 step 的 `with` 块传参：
+If a process only uses generic actions from the standard library (`std.set`/`std.require`/`std.rule_check`/
+`std.suspend`/`std.require_verified`), pass `nil` for `hooks` and the plugin author writes no Go at all — this is the
+community L1 tier. Standard actions take parameters via each step's `with` block:
 
 ```json
 {"step_id": "check_threshold", "type": "leaf", "action_ref": "std.require",
@@ -173,11 +183,14 @@ reg.RegisterDomain(*domain)
  "circuit_breaker_policy_ref": "route_to_flag", "on_success": "approve"}
 ```
 
-`std.require` 是无 if/else 引擎里表达分支的惯用法：条件成立则走 `on_success`，不成立则**失败**，从而经由 `circuit_breaker_policy_ref` 路由到 fallback step。完整可运行范例见 `examples/manifests/expense-guard.json`。
+`std.require` is the idiom for branching in an engine with no if/else: the condition holding takes `on_success`, and it
+not holding **fails**, routing through `circuit_breaker_policy_ref` to a fallback step. Complete runnable example:
+`examples/manifests/expense-guard.json`.
 
-### 并行分支（`type: "parallel"`）
+### Parallel branches (`type: "parallel"`)
 
-几项互不依赖的检查要同时做、都回来了再决定时，用 `parallel` step，分支是一组子 workflow：
+When several independent checks should run at once and be decided together, use a `parallel` step whose branches are
+sub-workflows:
 
 ```json
 {"step_id": "run_checks", "type": "parallel",
@@ -185,77 +198,94 @@ reg.RegisterDomain(*domain)
  "circuit_breaker_policy_ref": "route_to_manual_review", "on_success": "decide"}
 ```
 
-要点（细节见技术说明书 5.9）：
+What to know (detail in specification 5.9):
 
-- 分支真并发跑，但**汇合与 trace 一律按声明顺序**，所以结果跟谁先跑完无关。
-- 分支之间看不到对方的写入，各自从 incoming context 的拷贝出发。
-- **两个分支写同一个字段不同的值会被拒绝**（`*ConflictingBranchWrites`），不会按顺序仲裁——让它们写不同字段。
-- 分支里不能挂起（`std.suspend` 在分支中会报 `*NestedSuspensionUnsupported`）。
+- Branches really do run concurrently, but **the join and the trace always follow declaration order**, so the result
+  does not depend on which finishes first.
+- Branches cannot see each other's writes; each starts from a copy of the incoming context.
+- **Two branches writing the same field with different values is refused** (`*ConflictingBranchWrites`) rather than
+  arbitrated by order — have them write different fields.
+- A branch cannot suspend (`std.suspend` inside one returns `*NestedSuspensionUnsupported`).
 
-完整无代码范例见 `examples/manifests/onboarding-checks.json`。
+Complete no-code example: `examples/manifests/onboarding-checks.json`.
 
-### 提交前用 `cee validate` 自查
+### Self-check with `cee validate` before submitting
 
-`cmd/cee` 提供一个静态校验器，把结构完整性和引用完整性检查做成一条命令，纯声明式 manifest 可被完整校验（引用了自定义 Go hook 的 step 只能结构校验，hook 是否存在由 `Load` 在运行时兜底，validate 会以 warning 提示）：
+`cmd/cee` provides a static validator that turns structural and reference integrity checks into one command. Purely
+declarative manifests can be validated completely (a step referencing a custom Go hook gets structural validation
+only; whether the hook exists is checked by `Load` at runtime, and validate flags it as a warning):
 
 ```bash
 go run ./cmd/cee validate examples/manifests/expense-guard.json
 # ok: no issues        -> exit 0
-# [error] ...           -> exit 1（可直接用于 CI 门禁）
+# [error] ...           -> exit 1 (usable directly as a CI gate)
 ```
 
-它会抓出：悬空的 `on_success`/`sub_workflow_ref`/`entry_workflow_ref`、引用了未声明的 `circuit_breaker_policy_ref`、断路器 fallback 指向不存在的 step、标准动作参数写错、重复 step_id、以及会让 `Engine.Run` 失控的 `on_success` 环 / `sub_workflow_ref` 环等。
+It catches: dangling `on_success`/`sub_workflow_ref`/`entry_workflow_ref`, references to undeclared
+`circuit_breaker_policy_ref`, breaker fallbacks pointing at non-existent steps, wrong standard action parameters,
+duplicate step_ids, and the `on_success` / `sub_workflow_ref` cycles that would make `Engine.Run` run away.
 
-### 把插件发布到 catalog（社区分发）
+### Publishing a plugin to the catalog (community distribution)
 
-`catalog/` 是一个 git-based 的插件目录——`index.json` 加它指向的 manifest 文件，贡献一个 L1 插件就是一个 PR：
+`catalog/` is a git-based plugin directory — an `index.json` plus the manifest files it points at. Contributing an L1
+plugin is one PR:
 
 ```bash
-go run ./cmd/cee list             # 列出 catalog 里的插件
-go run ./cmd/cee lint             # 校验整个 catalog（CI 门禁；exit 1 = 有问题）
-go run ./cmd/cee install sla-guard # 校验通过后把 manifest 拉进 ./plugins/
+go run ./cmd/cee list             # list the plugins in the catalog
+go run ./cmd/cee lint             # validate the whole catalog (CI gate; exit 1 = problems)
+go run ./cmd/cee install sla-guard # validate, then pull the manifest into ./plugins/
 ```
 
-发布步骤：在 `catalog/plugins/<name>/manifest.json` 放你的 manifest，在 `catalog/index.json` 加一条 entry（`name`/`tier`/`version`/`domain`/`manifest` 路径），跑 `cee lint` 确认干净即可提 PR。`install` 是**先校验再落盘**——过不了 `cee validate` 的插件不会被装上。需要 Go Hook 的 L2 插件走 Go module 分发，不通过 catalog 的 `install`（但可以在 index 里用 `tier: "L2"` 登记以便被发现）。
+Publishing steps: put your manifest at `catalog/plugins/<name>/manifest.json`, add an entry to `catalog/index.json`
+(`name`/`tier`/`version`/`domain`/`manifest` path), run `cee lint` to confirm it's clean, and open a PR. `install`
+**validates before writing to disk** — a plugin that fails `cee validate` never gets installed. L2 plugins needing a
+Go hook are distributed as Go modules rather than via the catalog's `install` (but can be registered in the index with
+`tier: "L2"` so they are discoverable).
 
-想上排行榜：再加一个 `benchmark` 字段指向 `plugins/<name>/benchmark.json`（一组 `{workflow_ref, context}` 标准事件），然后：
+To get on the leaderboard: add a `benchmark` field pointing at `plugins/<name>/benchmark.json` (a set of
+`{workflow_ref, context}` standard events), then:
 
 ```bash
-go run ./cmd/cee bench             # 跑所有带 benchmark 的插件，按确定性比率排名
+go run ./cmd/cee bench             # run every plugin with a benchmark, ranked by determinism ratio
 ```
 
-排名口径是"相比每步一次 LLM 的 Agent 消除了多少调用"，这就是让贡献者为了一个可炫耀的数字去优化流程的社会化机制。
+The ranking basis is "how many calls were eliminated versus an agent making one LLM call per step" — the social
+mechanism that gets contributors optimising their processes for a number worth bragging about.
 
-`action_ref` 在 `hooks` 里找不到、`type` 既不是 `"leaf"` 也不是 `"composite"`、`composite` 缺 `sub_workflow_ref`——这三类错误 `Load` 都会返回带上下文（域名/workflow名/step名）的 `error`，方便定位是哪个 manifest 的哪个 step 写错了。
+An `action_ref` not found in `hooks`, a `type` that is neither `"leaf"` nor `"composite"`, and a `composite` missing
+`sub_workflow_ref` — `Load` returns an `error` with context (domain name / workflow name / step name) for all three,
+so you can find which step of which manifest is wrong.
 
-## 4. 如何给一个 Step 接入沙盒门禁
+## 4. Adding sandbox gating to a step
 
-在 `LeafStep` 上填 `SandboxProbeRef`，并向传给 `execution.NewEngine` 的 `sandbox` 注册同名探针：
+Set `SandboxProbeRef` on the `LeafStep`, and register a probe of the same name on the `sandbox` passed to
+`execution.NewEngine`:
 
 ```go
 sb := sandbox.NewSandbox()
 sb.RegisterProbe("check_impact", func(ctx map[string]any) (bool, string, error) {
-    // 只做只读/模拟检查，绝不能有真实副作用
+    // read-only / simulated checks only; never any real side effect
     if ctx["target_host"] == "dc01" {
         return false, "would isolate a domain controller", nil
     }
     return true, "", nil
 })
 
-engine := execution.NewEngine(sb) // Sandbox 满足 execution.Prober 接口
+engine := execution.NewEngine(sb) // Sandbox satisfies execution.Prober
 ```
 
-`Engine.Run` 会在执行该 Step 的 `Run` 之前先调用这个探针；探针返回 `healthy=false` 时，Step 的真实动作**不会执行**，直接走该 Step 声明的 `CircuitBreakerPolicyRef`。
+`Engine.Run` calls this probe before running that step's `Run`. When the probe returns `healthy=false`, the step's real
+action **does not execute**, and control goes straight to the step's declared `CircuitBreakerPolicyRef`.
 
-## 5. 如何给一次抽取接入 schema 校验
+## 5. Adding schema validation to an extraction
 
 ```go
 inj := llminjector.NewInjector()
 inj.RegisterSchema("finance.expense_fields",
     llminjector.Schema{"amount": llminjector.FieldFloat64, "category": llminjector.FieldString},
     func(rawText string) (map[string]any, error) {
-        // 这里调真实的小模型/规则做抽取，返回值可以包含多余字段——
-        // Extract 只会保留 schema 里声明过的那些
+        // call your real small model / rules here; the return value may contain extra fields —
+        // Extract keeps only the ones the schema declared
         return callYourLLM(rawText)
     },
 )
@@ -268,53 +298,98 @@ if result.Success {
 }
 ```
 
-## 5b. 如何度量一次请求（Scorecard）
+## 5b. Measuring a request (Scorecard)
 
-`scorecard.Recorder` 是 per-request 的：每次请求 new 一个,attach 到引擎(和注入器),跑完 `Snapshot`。引擎默认不带 observer,零开销;只有 attach 后才回调。
+`scorecard.Recorder` is per-request: create one per request, attach it to the engine (and injector), and `Snapshot`
+when done. The engine carries no observer by default, at zero overhead; callbacks only happen once attached.
 
 ```go
 recorder := scorecard.NewRecorder()
-engine.SetObserver(recorder)          // 引擎侧:步数/沙盒/断路器
-injector.SetObserver(recorder)         // 注入器侧:LLM 抽取次数(有 LLM 环节时才需要)
+engine.SetObserver(recorder)          // engine side: steps / sandbox / breakers
+injector.SetObserver(recorder)         // injector side: LLM extraction count (only needed when an LLM is involved)
 
 result, _ := engine.Run(entryRef, ctx)
 
 card := recorder.Snapshot(entryRef)
 fmt.Println(card)                       // determinism 100% (2 deterministic steps, 0 LLM calls)...
-_ = card.DeterminismRatio()             // 0.0~1.0,= 相比"每步一次 LLM"的 Agent 省掉的调用比例
+_ = card.DeterminismRatio()             // 0.0–1.0, = the share of calls saved vs a per-step-LLM agent
 ```
 
-被计数的是**实际执行**:被沙盒拦下、动作没跑成的 Step 不算确定性步数(算沙盒预演 + 断路器)。`examples/security_monitoring` 里有完整用法。
+What is counted is **actual execution**: a step blocked by the sandbox whose action never ran does not count as a
+deterministic step (it counts as a sandbox rehearsal plus a breaker). Full usage in
+`examples/security_monitoring`.
 
-## 6. 各包 API 速查
+## 5c. Measuring the error side (diagnostics)
 
-| 包 | 构造函数 | 关键方法 |
+Where the scorecard is per-request and reports what went well, `diagnostics.Recorder` is long-lived and reports what
+went wrong across many runs: intent miss rate, probe refusal rate, escalation rate. Attach one recorder to both the
+router and the engine, and call `ObserveRun` once per request so escalation has a denominator.
+
+```go
+diag := diagnostics.NewRecorder()
+router.SetObserver(diag)   // intent hit/miss
+engine.SetObserver(diag)   // probe outcomes, suspensions, breaker trips
+
+for _, req := range batch {
+    diag.ObserveRun()
+    match := router.Match(domain, req.Text)
+    if match.Matched {
+        engine.Run(match.EntryWorkflowRef, req.Ctx)
+    }
+}
+
+fmt.Println(diag.Report())  // intent miss 20% (1 of 5), probe refusal 25% (1 of 4), ...
+```
+
+The engine has one observer slot, so a deployment wanting both per-request scorecards and aggregate diagnostics runs
+them on separate passes or composes its own forwarding observer. `examples/security_monitoring` shows the aggregate
+batch alongside its per-event scorecards.
+
+## 6. API quick reference
+
+| Package | Constructor | Key methods |
 |---|---|---|
-| `intentrouter` | `NewRouter(threshold float64) *Router` | `RegisterNode(entities.IntentNode)`、`Match(domainID, rawText string) entities.MatchResult` |
-| `execution` | `NewEngine(sandbox Prober) *Engine` | `RegisterWorkflow(*Workflow)`、`RegisterPolicy(CircuitBreakerPolicy)`、`SetObserver(Observer)`、`Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error)` |
-| `llminjector` | `NewInjector() *Injector` | `RegisterSchema(schemaRef string, schema Schema, extractor Extractor)`、`SetObserver(Observer)`、`Extract(entities.ExtractionRequest) entities.ExtractionResult` |
-| `sandbox` | `NewSandbox() *Sandbox` | `RegisterProbe(probeRef string, probe Probe)`、`Probe(entities.ProbeRequest) (entities.ProbeResult, error)` |
-| `registry` | `NewRegistry(router *intentrouter.Router, engine *execution.Engine) *Registry` | `RegisterDomain(Domain)`、`Domains() []string` |
-| `scorecard` | `NewRecorder() *Recorder` | `SetObserver` 可接受它；`Snapshot(workflowID string) Scorecard`、`Scorecard.DeterminismRatio()` |
-| `stdlib` | 无（`Default() Library` 返回内置动作） | 内置 `std.set`、`std.require`、`std.rule_check` |
-| `manifest` | 无（纯函数包） | `Load(data []byte, hooks Hooks, std stdlib.Library) (*registry.Domain, error)`、`Validate(data []byte, std stdlib.Library) Report` |
+| `intentrouter` | `NewRouter(threshold float64) *Router` | `RegisterNode(entities.IntentNode)`, `Match(domainID, rawText string) entities.MatchResult`, `SetVectorizer(Vectorizer)` |
+| `execution` | `NewEngine(sandbox Prober) *Engine` | `RegisterWorkflow(*Workflow)`, `RegisterPolicy(CircuitBreakerPolicy)`, `SetObserver(Observer)`, `SetStore(Store)`, `Run(workflowRef string, ctx map[string]any) (entities.WorkflowResult, error)`, `Resume(pointer string, resolution map[string]any)`, `ResumeAs(pointer, identity string, resolution map[string]any)` |
+| `llminjector` | `NewInjector() *Injector` | `RegisterSchema(schemaRef string, schema Schema, extractor Extractor)`, `SetObserver(Observer)`, `Extract(entities.ExtractionRequest) entities.ExtractionResult`, `ContextFrom(...)` |
+| `sandbox` | `NewSandbox() *Sandbox` | `RegisterProbe(probeRef string, probe Probe)`, `Probe(entities.ProbeRequest) (entities.ProbeResult, error)` |
+| `registry` | `NewRegistry(router *intentrouter.Router, engine *execution.Engine) *Registry` | `RegisterDomain(Domain)`, `Domains() []string` |
+| `filestore` | `New(dir string) (*Store, error)` | `Save`, `Load`, `Consume`, `Release`, `Pending()`, `Orphaned(minAge)` |
+| `scorecard` | `NewRecorder() *Recorder` | Accepted by `SetObserver`; `Snapshot(workflowID string) Scorecard`, `Scorecard.DeterminismRatio()` |
+| `diagnostics` | `NewRecorder() *Recorder` | Accepted by `router.SetObserver` and `engine.SetObserver`; `ObserveRun()`, `Report()` with `IntentMissRate` / `ProbeRefusalRate` / `EscalationRate` |
+| `httpapi` | `New(Config) http.Handler` | Mount it under your own middleware |
+| `stdlib` | none (`Default() Library` returns the built-ins) | `std.set`, `std.require`, `std.rule_check`, `std.suspend`, `std.require_verified` |
+| `manifest` | none (pure function package) | `Load(data []byte, hooks Hooks, std stdlib.Library) (*registry.Domain, error)`, `Validate(data []byte, std stdlib.Library) Report` |
 
-## 7. 测试规范（怎么写，不是要不要写——那是 NORMATIVE_HANDBOOK 的事）
+## 7. Testing conventions (how to write them, not whether to — that's the normative handbook's business)
 
-- Go 惯例：`xxx_test.go` 跟被测代码放在同一目录、同一个包名下（除 `registry_test.go`/`manifest_test.go` 这类需要验证"多个包协作"的集成测试外，一般不需要额外的 `_test` 后缀包）。
-- 优先用标准库 `testing` + `errors.As`/`errors.Is`，不引入第三方断言库——保持模块零依赖。
-- 每个包至少要覆盖：一条正常路径、一条边界/未注册引用的报错路径。`execution` 包额外要覆盖断路器命中和沙盒门禁两条路径（参考 `engine_test.go` 里 `TestFailureWithPolicyFallsBack`、`TestSandboxGateBlocksUnhealthyStepViaCircuitBreaker`）。
+- Go convention: `xxx_test.go` sits in the same directory and package as the code under test. (Integration tests that
+  need to verify multiple packages cooperating, like `registry_test.go`/`manifest_test.go`, are the exception; a
+  separate `_test`-suffixed package is generally unnecessary.)
+- Prefer the standard library `testing` plus `errors.As`/`errors.Is`. Do not introduce a third-party assertion library
+  — the module stays dependency-free.
+- Every package must cover at least one normal path and one boundary/unregistered-reference error path. The
+  `execution` package additionally covers the breaker path and the sandbox gating path (see
+  `TestFailureWithPolicyFallsBack` and `TestSandboxGateBlocksUnhealthyStepViaCircuitBreaker` in `engine_test.go`).
 
-## 8. 常见问题
+## 8. Common problems
 
-- **`engine.Run` 报 `no workflow registered for "xxx"`**：`WorkflowID` 和 `IntentNode.EntryWorkflowRef` 必须对得上——传给 `Run` 的就是 *WorkflowID*。
-- **`cee validate` 报 `entry_step_ref ... is deprecated`**：这个字段改名了。它装的一直是 `workflow_id`，而旧名字 `entry_step_ref` 读起来像在指一个 step，是纯粹的错名。改法就是把 JSON 里的键名换掉，值一个字不用动：
+- **`engine.Run` reports `no workflow registered for "xxx"`**: `WorkflowID` and `IntentNode.EntryWorkflowRef` must
+  agree — what you pass to `Run` is the *WorkflowID*.
+- **`cee validate` reports `entry_step_ref ... is deprecated`**: the field was renamed. It always held a
+  `workflow_id`, and the old name `entry_step_ref` read as though it pointed at a step, which was simply wrong. The fix
+  is to change the key; the value does not change at all:
 
   ```diff
   - {"node_id": "finance.dup", "entry_step_ref": "finance.flag_duplicate"}
   + {"node_id": "finance.dup", "entry_workflow_ref": "finance.flag_duplicate"}
   ```
 
-  旧名仍然可用（第 3 条不允许删除已发布的 JSON 字段），只是会告警。两个名字都写且值不同则直接报错——那种情况没法在不猜作者意图的前提下解决。Go 那边字段已经是 `EntryWorkflowRef`，旧名不再存在，编译期就会提示。
-- **`sandbox_probe_ref` 声明了但没注册探针**：`Engine.Run` 会返回 `no probe registered for "xxx"` 的 error，而不是静默跳过门禁——这是故意的,不允许"声明了门禁但门禁形同虚设"。
-- **manifest 加载报 `references unregistered action_ref`**：检查 `Hooks` map 的 key 是否跟 JSON 里的 `action_ref` 完全一致（区分大小写）。
+  The old name still works (rule 3 forbids deleting a published JSON field); it just warns. Writing both names with
+  different values is an outright error — that case cannot be resolved without guessing the author's intent. On the Go
+  side the field is already `EntryWorkflowRef` and the old name no longer exists, so the compiler tells you.
+- **`sandbox_probe_ref` declared but no probe registered**: `Engine.Run` returns a `no probe registered for "xxx"`
+  error rather than silently skipping the gate. This is deliberate — "a gate was declared but the gate does nothing" is
+  not allowed.
+- **Manifest loading reports `references unregistered action_ref`**: check that the `Hooks` map key matches the JSON's
+  `action_ref` exactly (case-sensitive).

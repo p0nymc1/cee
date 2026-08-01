@@ -168,7 +168,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("== 虚拟货币异常监控 / crypto market surveillance ==")
+	fmt.Println("== crypto market surveillance ==")
 	fmt.Println("Fixed thresholds over live quotes. Anomaly flagging, not investment advice.")
 	fmt.Printf("Rules: move >= %.1f%% · stablecoin peg +/- %.1f%% · liquidity floor $%.0fM · quotes younger than %s\n\n",
 		materialMovePct, pegTolerancePct, liquidityFloor/1e6, maxQuoteAge)

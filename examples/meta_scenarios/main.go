@@ -91,7 +91,7 @@ func main() {
 }
 
 func ticketRouting(rt *runtime) {
-	fmt.Println("== 工单路由 / ticket routing: an N-way switch from binary edges ==")
+	fmt.Println("== ticket routing: an N-way switch from binary edges ==")
 
 	for _, ticket := range []map[string]any{
 		{"id": "T-1", "severity": "urgent", "category": "bug"},
@@ -111,7 +111,7 @@ func ticketRouting(rt *runtime) {
 }
 
 func changeWindow(rt *runtime) {
-	fmt.Println("== 调度 / scheduling: deferral is suspension, not a timer ==")
+	fmt.Println("== scheduling: deferral is suspension, not a timer ==")
 
 	inWindow, err := rt.engine.Run("change-window.apply",
 		map[string]any{"change": "bump-tls-ciphers", "in_maintenance_window": true})
@@ -141,7 +141,7 @@ func changeWindow(rt *runtime) {
 }
 
 func recordSync(rt *runtime) {
-	fmt.Println("== 数据同步 / data sync: the loop lives in the caller, not the DAG ==")
+	fmt.Println("== data sync: the loop lives in the caller, not the DAG ==")
 
 	batch := []map[string]any{
 		{"record_id": "row-1", "target_version_seen": 7.0},

@@ -1,9 +1,9 @@
 {
-  "_comment": "把这个文件复制成仓库根目录的 netwatch.json 再改。这里没有任何威胁情报——风险地址由你自己列。",
+  "_comment": "Copy this to netwatch.json in the repo root and edit it. There is no threat intelligence here; you list the risky addresses yourself.",
 
   "risky_peers": {
-    "203.0.113.66": "上周钓鱼邮件里的地址",
-    "198.51.100.23": "同事机器被入侵时连过的 C2"
+    "203.0.113.66": "address from last week's phishing email",
+    "198.51.100.23": "C2 a compromised colleague's machine talked to"
   },
 
   "expected_talkers": [
@@ -12,10 +12,10 @@
   ],
 
   "plaintext_ports": {
-    "21": "FTP — 凭据和数据都是明文",
-    "23": "Telnet — 凭据明文",
-    "110": "POP3 — 凭据明文",
-    "143": "IMAP 未加密",
-    "3389": "RDP 暴露在公网"
+    "21": "FTP — credentials and data both in cleartext",
+    "23": "Telnet — credentials in cleartext",
+    "110": "POP3 — credentials in cleartext",
+    "143": "IMAP unencrypted",
+    "3389": "RDP exposed to the internet"
   }
 }

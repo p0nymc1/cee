@@ -58,4 +58,4 @@ flipped decisions and reworded explanations separately, and leads with the numbe
 something.
 
 That distinction was not in the original design. It only appeared because the demo was built
-against a realistic batch rather than the two-line example the whitepaper had been carrying.
+against a realistic batch rather than a two-line example.

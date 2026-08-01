@@ -184,7 +184,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("== 本机外连筛查 / local outbound connection screening ==")
+	fmt.Println("== local outbound connection screening ==")
 	fmt.Printf("%d established connections · %d risky peers listed · %d plaintext ports\n",
 		len(conns), len(policy.RiskyPeers), len(policy.PlaintextPorts))
 	fmt.Println("Rules are in netwatch.json — this ships no threat intelligence.")
