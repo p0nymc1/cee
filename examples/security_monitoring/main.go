@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/p0nymc1/cee/diagnostics"
 	"github.com/p0nymc1/cee/entities"
 	"github.com/p0nymc1/cee/execution"
 	"github.com/p0nymc1/cee/intentrouter"
@@ -44,6 +45,45 @@ func main() {
 	fmt.Println()
 	fmt.Println("== Scenario 2: the same technique, but against a domain controller ==")
 	runEvent(router, engine, "repeated failed login attempts spike from one source", "dc01")
+
+	fmt.Println()
+	fmt.Println("== Aggregate diagnostics across a batch ==")
+	fmt.Printf("  %s\n", runBatch())
+}
+
+// runBatch shows the error side of the picture the scorecard leaves out. The
+// per-event scorecards above report what CEE did efficiently; a diagnostics
+// recorder aggregates what went wrong across a batch -- how often routing
+// missed, how often the sandbox refused a step. It attaches once, for the whole
+// batch, rather than per event.
+func runBatch() diagnostics.Report {
+	rec := diagnostics.NewRecorder()
+
+	router, engine := buildRuntime()
+	router.SetObserver(rec)
+	engine.SetObserver(rec)
+
+	events := []struct{ alert, host string }{
+		{"repeated failed login attempts spike from one source", "ws-4471"},
+		{"many failed logins from one source", "ws-8800"},
+		{"password spray detected", "dc01"}, // probe refuses: critical asset
+		{"login from unusual location for known account", "ws-1200"},
+		{"nightly database backup completed successfully", "ws-1200"}, // no technique matches
+	}
+
+	for _, e := range events {
+		rec.ObserveRun()
+		match := router.Match("security", e.alert)
+		if !match.Matched {
+			continue
+		}
+		engine.Run(match.EntryWorkflowRef, map[string]any{
+			"target_host": e.host,
+			"technique":   match.NodeRef,
+		})
+	}
+
+	return rec.Report()
 }
 
 func runEvent(router *intentrouter.Router, engine *execution.Engine, alertText, targetHost string) {

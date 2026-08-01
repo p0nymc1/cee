@@ -37,13 +37,18 @@ type Vectorizer interface {
 	Vectorize(text string) ([]float64, error)
 }
 
-type Router struct {
-	threshold  float64
-	nodes      map[string][]entities.IntentNode
-	vectorizer Vectorizer
+type Observer interface {
+	ObserveMatch(domainID string, matched bool)
+}
 
-	mu    sync.Mutex
-	cache map[string][]float64
+type Router struct {
+	threshold float64
+
+	mu         sync.RWMutex
+	nodes      map[string][]entities.IntentNode
+	cache      map[string][]float64
+	vectorizer Vectorizer
+	observer   Observer
 }
 
 func NewRouter(threshold float64) *Router {
@@ -55,15 +60,49 @@ func NewRouter(threshold float64) *Router {
 }
 
 func (r *Router) SetVectorizer(v Vectorizer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.vectorizer = v
 }
 
+func (r *Router) SetObserver(o Observer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observer = o
+}
+
 func (r *Router) RegisterNode(node entities.IntentNode) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.nodes[node.DomainID] = append(r.nodes[node.DomainID], node)
 }
 
+func (r *Router) nodesFor(domainID string) []entities.IntentNode {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.nodes[domainID]
+}
+
+func (r *Router) currentVectorizer() Vectorizer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.vectorizer
+}
+
 func (r *Router) Match(domainID, rawText string) entities.MatchResult {
-	if r.vectorizer != nil {
+	result := r.match(domainID, rawText)
+
+	r.mu.RLock()
+	o := r.observer
+	r.mu.RUnlock()
+	if o != nil {
+		o.ObserveMatch(domainID, result.Matched)
+	}
+	return result
+}
+
+func (r *Router) match(domainID, rawText string) entities.MatchResult {
+	if r.currentVectorizer() != nil {
 		if result, ok := r.matchSemantic(domainID, rawText); ok {
 			return result
 		}
@@ -77,7 +116,7 @@ func (r *Router) matchLexical(domainID, rawText string) entities.MatchResult {
 	var bestNode *entities.IntentNode
 	bestScore := 0.0
 
-	for _, node := range r.nodes[domainID] {
+	for _, node := range r.nodesFor(domainID) {
 		node := node
 		for _, example := range node.Examples {
 			score := jaccard(queryTokens, tokenize(example))
@@ -99,7 +138,7 @@ func (r *Router) matchSemantic(domainID, rawText string) (entities.MatchResult, 
 	var bestNode *entities.IntentNode
 	bestScore := 0.0
 
-	for _, node := range r.nodes[domainID] {
+	for _, node := range r.nodesFor(domainID) {
 		node := node
 		for _, example := range node.Examples {
 			exampleVec, err := r.vectorFor(example)
@@ -129,14 +168,14 @@ func (r *Router) result(bestNode *entities.IntentNode, bestScore float64) entiti
 }
 
 func (r *Router) vectorFor(text string) ([]float64, error) {
-	r.mu.Lock()
-	if v, ok := r.cache[text]; ok {
-		r.mu.Unlock()
+	r.mu.RLock()
+	v, ok := r.cache[text]
+	r.mu.RUnlock()
+	if ok {
 		return v, nil
 	}
-	r.mu.Unlock()
 
-	v, err := r.vectorizer.Vectorize(text)
+	v, err := r.currentVectorizer().Vectorize(text)
 	if err != nil {
 		return nil, err
 	}

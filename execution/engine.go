@@ -103,6 +103,16 @@ type Observer interface {
 	ObserveCircuitBreaker(workflowID, stepID string)
 }
 
+// ProbeOutcomeObserver is an optional extension of Observer. An observer that
+// also satisfies it is told whether each probe passed or refused, which a
+// circuit-breaker trip on its own cannot reveal -- a trip may come from a
+// probe, a failed action, or a failed sub-workflow. The signal is what a
+// diagnostic recorder needs to compute a probe refusal rate rather than only
+// a total breaker count.
+type ProbeOutcomeObserver interface {
+	ObserveProbeOutcome(workflowID, stepID string, healthy bool)
+}
+
 type Engine struct {
 	mu         sync.RWMutex
 	sandbox    Prober
@@ -290,6 +300,12 @@ func (e *Engine) runFrom(workflowRef, startStepID string, ctx map[string]any, de
 					ProbeRef:    s.SandboxProbeRef,
 					DomainID:    workflow.DomainID,
 					StepContext: ctx,
+				})
+				healthy := err == nil && probeResult.Healthy
+				e.observe(func(o Observer) {
+					if po, ok := o.(ProbeOutcomeObserver); ok {
+						po.ObserveProbeOutcome(workflow.WorkflowID, s.StepID, healthy)
+					}
 				})
 				if err != nil || !probeResult.Healthy {
 					reason := probeResult.DetectedFailureMode

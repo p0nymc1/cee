@@ -34,3 +34,22 @@ func TestCriticalAssetIsHeldForHumanApproval(t *testing.T) {
 		t.Fatalf("expected downgrade to human approval, got %+v", result.Output)
 	}
 }
+
+func TestBatchDiagnosticsMeasuresTheErrorSide(t *testing.T) {
+	r := runBatch()
+
+	// One of five alerts (the database backup) matches no technique.
+	if r.IntentMatches != 4 || r.IntentMisses != 1 {
+		t.Errorf("intent: matches=%d misses=%d, want 4 and 1", r.IntentMatches, r.IntentMisses)
+	}
+	if got := r.IntentMissRate(); got != 0.2 {
+		t.Errorf("intent miss rate = %v, want 0.2", got)
+	}
+	// Four events reach a probe; only dc01 refuses.
+	if r.ProbesRun != 4 || r.ProbesRefused != 1 {
+		t.Errorf("probe: run=%d refused=%d, want 4 and 1", r.ProbesRun, r.ProbesRefused)
+	}
+	if got := r.ProbeRefusalRate(); got != 0.25 {
+		t.Errorf("probe refusal rate = %v, want 0.25", got)
+	}
+}
