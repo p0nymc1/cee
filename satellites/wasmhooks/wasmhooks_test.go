@@ -121,3 +121,30 @@ type staticRuntime struct{ out []byte }
 func (s *staticRuntime) Call(context.Context, []byte, []byte) ([]byte, error) {
 	return s.out, nil
 }
+
+type deadlineProbe struct{ hadDeadline bool }
+
+func (d *deadlineProbe) Call(ctx context.Context, module, inputJSON []byte) ([]byte, error) {
+	_, d.hadDeadline = ctx.Deadline()
+	return []byte(`{}`), nil
+}
+
+func TestHookRunsUntrustedCodeUnderADeadline(t *testing.T) {
+	p := &deadlineProbe{}
+	if _, err := Hook(p, nil)(map[string]any{}); err != nil {
+		t.Fatalf("Hook: %v", err)
+	}
+	if !p.hadDeadline {
+		t.Error("Hook must run an untrusted module under a deadline, not context.Background()")
+	}
+}
+
+func TestHookWithTimeoutZeroDisablesTheDeadlineDeliberately(t *testing.T) {
+	p := &deadlineProbe{}
+	if _, err := HookWithTimeout(p, nil, 0)(map[string]any{}); err != nil {
+		t.Fatalf("HookWithTimeout: %v", err)
+	}
+	if p.hadDeadline {
+		t.Error("an explicit 0 timeout must disable the deadline")
+	}
+}

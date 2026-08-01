@@ -73,9 +73,9 @@ func Chat(cfg Config, system, user string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readCapped(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("llmhttp: reading response: %w", err)
+		return "", fmt.Errorf("llmhttp: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("llmhttp: endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -104,6 +104,23 @@ func Extractor(cfg Config, fields []string) llminjector.Extractor {
 		}
 		return out, nil
 	}
+}
+
+// MaxResponseBytes caps how much of an endpoint's response is read into memory.
+// An endpoint that is compromised, misbehaving, or reached through a hostile
+// proxy could otherwise stream an unbounded body and exhaust memory; the inbound
+// side (httpapi) is already capped, and this is the outbound counterpart.
+const MaxResponseBytes = 8 << 20 // 8 MiB
+
+func readCapped(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, MaxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+	if int64(len(body)) > MaxResponseBytes {
+		return nil, fmt.Errorf("response exceeds the %d-byte limit", MaxResponseBytes)
+	}
+	return body, nil
 }
 
 func buildSystemPrompt(fields []string) string {

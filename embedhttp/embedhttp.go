@@ -13,6 +13,10 @@ type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// MaxResponseBytes caps how much of an endpoint's response is read into memory,
+// so a misbehaving or hostile endpoint cannot exhaust it with an unbounded body.
+const MaxResponseBytes = 8 << 20 // 8 MiB
+
 type Config struct {
 	BaseURL    string
 	Model      string
@@ -70,9 +74,12 @@ func (c *Client) Vectorize(text string) ([]float64, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("embedhttp: reading response: %w", err)
+	}
+	if int64(len(body)) > MaxResponseBytes {
+		return nil, fmt.Errorf("embedhttp: response exceeds the %d-byte limit", MaxResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("embedhttp: endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

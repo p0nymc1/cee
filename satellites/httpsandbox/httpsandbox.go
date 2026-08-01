@@ -16,6 +16,11 @@ type Doer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// MaxResponseBytes caps how much of the sandbox service's response is read into
+// memory. A remote sandbox is more plausibly third-party than the model
+// endpoints, so an unbounded body from it is a real exhaustion risk.
+const MaxResponseBytes = 8 << 20 // 8 MiB
+
 type Config struct {
 	BaseURL    string
 	APIKey     string
@@ -85,11 +90,17 @@ func (s *Sandbox) Probe(req entities.ProbeRequest) (entities.ProbeResult, error)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return entities.ProbeResult{
 			Healthy:             false,
 			DetectedFailureMode: "httpsandbox: reading response: " + err.Error(),
+		}, nil
+	}
+	if int64(len(respBody)) > MaxResponseBytes {
+		return entities.ProbeResult{
+			Healthy:             false,
+			DetectedFailureMode: fmt.Sprintf("httpsandbox: response exceeds the %d-byte limit", MaxResponseBytes),
 		}, nil
 	}
 	if resp.StatusCode != http.StatusOK {

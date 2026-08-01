@@ -143,3 +143,29 @@ func TestSatellitePlugsIntoTheEngineUnchanged(t *testing.T) {
 		t.Fatalf("expected the breaker to route to held, got %+v", bad.Output)
 	}
 }
+
+type endlessBody struct{}
+
+func (endlessBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'a'
+	}
+	return len(p), nil
+}
+
+type oversizedDoer struct{}
+
+func (oversizedDoer) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(endlessBody{}), Header: make(http.Header)}, nil
+}
+
+func TestProbeRejectsAnOversizedResponse(t *testing.T) {
+	sb := New(Config{BaseURL: "https://sbx", Image: "python:3", HTTPClient: oversizedDoer{}})
+	result, err := sb.Probe(entities.ProbeRequest{StepContext: map[string]any{"probe_command": []string{"echo", "hi"}}})
+	if err != nil {
+		t.Fatalf("Probe should fold the limit into a result, not error: %v", err)
+	}
+	if result.Healthy || !strings.Contains(result.DetectedFailureMode, "limit") {
+		t.Fatalf("an unbounded sandbox response must be refused, got %+v", result)
+	}
+}

@@ -13,10 +13,18 @@ type Runtime interface {
 	Call(ctx context.Context, module []byte, inputJSON []byte) (outputJSON []byte, err error)
 }
 
+// DefaultTimeout bounds how long an untrusted module may run under Hook. A
+// package whose whole purpose is a trust boundary should not default to running
+// unknown code with no time limit, so Hook applies this and HookWithTimeout is
+// the way to choose another value -- or 0 to disable it deliberately.
+const DefaultTimeout = 5 * time.Second
+
 func Hook(rt Runtime, module []byte) execution.Action {
-	return hook(rt, module, 0)
+	return hook(rt, module, DefaultTimeout)
 }
 
+// HookWithTimeout runs the module under the given timeout. A timeout of 0
+// disables the deadline -- an explicit choice, unlike Hook's safe default.
 func HookWithTimeout(rt Runtime, module []byte, timeout time.Duration) execution.Action {
 	return hook(rt, module, timeout)
 }

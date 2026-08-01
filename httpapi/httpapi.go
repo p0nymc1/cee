@@ -26,6 +26,13 @@ type Config struct {
 	Pending PendingLister
 
 	MaxBodyBytes int64
+
+	// Logger, if set, receives the full internal error whenever a run fails for
+	// a reason other than a circuit breaker (a misconfiguration such as an
+	// unregistered workflow). The client only ever sees a generic message, so
+	// the internal detail -- which names workflows and steps -- does not leak
+	// across the boundary; this is where an operator can still read it.
+	Logger func(error)
 }
 
 type api struct {
@@ -70,8 +77,13 @@ type runResponse struct {
 	Reason       string         `json:"reason,omitempty"`
 }
 
+// pendingEntry deliberately omits the resume pointer. The pointer is the
+// capability to resume -- and a suspension with no audience can be resumed by
+// anyone who holds it -- so listing it here would let any caller who can read
+// /v1/pending approve any pending run. The pointer reaches the party that
+// started the run through the run response instead, not through a broadcast
+// listing. This view answers "what is waiting, and for whom", nothing more.
 type pendingEntry struct {
-	Pointer  string `json:"pointer"`
 	Workflow string `json:"workflow"`
 	Step     string `json:"step"`
 	Reason   string `json:"reason"`
@@ -137,8 +149,8 @@ func (a *api) pending(w http.ResponseWriter, r *http.Request) {
 	out := make([]pendingEntry, 0, len(states))
 	for _, s := range states {
 		out = append(out, pendingEntry{
-			Pointer: s.Pointer, Workflow: s.WorkflowID,
-			Step: s.StepID, Reason: s.Reason, Audience: s.Audience,
+			Workflow: s.WorkflowID,
+			Step:     s.StepID, Reason: s.Reason, Audience: s.Audience,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -192,7 +204,13 @@ func (a *api) writeRun(w http.ResponseWriter, result entities.WorkflowResult, er
 			return
 		}
 
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		// Any other error is a misconfiguration (an unregistered workflow, a
+		// missing step): its text names internal structure, so the client gets
+		// a generic message and the detail goes to the operator's logger.
+		if a.cfg.Logger != nil {
+			a.cfg.Logger(err)
+		}
+		writeError(w, http.StatusUnprocessableEntity, "the workflow could not be run")
 	}
 }
 

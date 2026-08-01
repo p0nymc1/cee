@@ -69,3 +69,26 @@ func TestVectorizeEmptyEmbeddingIsError(t *testing.T) {
 		t.Fatalf("expected an error when the response has no embedding")
 	}
 }
+
+type endlessBody struct{}
+
+func (endlessBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'a'
+	}
+	return len(p), nil
+}
+
+type oversizedDoer struct{}
+
+func (oversizedDoer) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(endlessBody{}), Header: make(http.Header)}, nil
+}
+
+func TestVectorizeRejectsAnOversizedResponse(t *testing.T) {
+	c := New(Config{BaseURL: "https://x/v1", Model: "m", HTTPClient: oversizedDoer{}})
+	_, err := c.Vectorize("hello")
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("an unbounded response must be rejected, got %v", err)
+	}
+}

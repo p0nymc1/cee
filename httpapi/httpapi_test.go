@@ -311,3 +311,51 @@ func TestAnonymousModeStillCannotAnswerAnAudiencedSuspension(t *testing.T) {
 		t.Fatalf("anonymous must not satisfy an audience, got %d: %s", rec.Code, rec.Body)
 	}
 }
+
+func TestPendingDoesNotExposeTheResumePointer(t *testing.T) {
+	engine, store := desk(t)
+	h := handler(t, engine, store, headerIdentity)
+
+	rec := post(h, "/v1/run", `{"workflow":"payments.release","context":{"amount":5000,"claimant":"wei"}}`,
+		map[string]string{"X-Test-Identity": "wei"})
+	pointer, _ := decode(t, rec)["state_pointer"].(string)
+	if pointer == "" {
+		t.Fatal("the run should have parked with a pointer")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/pending", nil)
+	req.Header.Set("X-Test-Identity", "somebody-else")
+	r2 := httptest.NewRecorder()
+	h.ServeHTTP(r2, req)
+
+	body := r2.Body.String()
+	if strings.Contains(body, pointer) {
+		t.Fatalf("the listing handed out the resume pointer (an approval capability): %s", body)
+	}
+	if strings.Contains(body, `"pointer"`) {
+		t.Fatalf("the listing must not carry a pointer field: %s", body)
+	}
+}
+
+func TestAMisconfigurationErrorStaysServerSide(t *testing.T) {
+	engine := execution.NewEngine(nil) // nothing registered
+	var logged error
+	h, err := httpapi.New(httpapi.Config{
+		Engine: engine, AllowAnonymous: true, Logger: func(e error) { logged = e },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	rec := post(h, "/v1/run", `{"workflow":"nope.missing","context":{}}`, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "nope.missing") || strings.Contains(body, "no workflow registered") {
+		t.Fatalf("internal error text leaked to the client: %s", body)
+	}
+	if logged == nil || !strings.Contains(logged.Error(), "nope.missing") {
+		t.Fatalf("the operator logger should receive the real error, got %v", logged)
+	}
+}

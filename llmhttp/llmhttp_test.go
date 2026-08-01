@@ -107,3 +107,25 @@ func TestStripCodeFence(t *testing.T) {
 		}
 	}
 }
+
+type endlessBody struct{}
+
+func (endlessBody) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'a'
+	}
+	return len(p), nil
+}
+
+type oversizedDoer struct{}
+
+func (oversizedDoer) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(endlessBody{}), Header: make(http.Header)}, nil
+}
+
+func TestChatRejectsAnOversizedResponse(t *testing.T) {
+	_, err := Chat(Config{BaseURL: "https://x/v1", Model: "m", HTTPClient: oversizedDoer{}}, "s", "u")
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("an unbounded response must be rejected, got %v", err)
+	}
+}
