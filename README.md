@@ -1,6 +1,10 @@
 # CEE — Cognitive Execution Engine
 
 [![CI](https://github.com/p0nymc1/cee/actions/workflows/ci.yml/badge.svg)](https://github.com/p0nymc1/cee/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/p0nymc1/cee.svg)](https://pkg.go.dev/github.com/p0nymc1/cee)
+[![Go Report Card](https://goreportcard.com/badge/github.com/p0nymc1/cee)](https://goreportcard.com/report/github.com/p0nymc1/cee)
+[![Go version](https://img.shields.io/github/go-mod/go-version/p0nymc1/cee)](go.mod)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 A business-agnostic, deterministic-first execution protocol. A deterministic state machine drives execution; the LLM
 is an edge tool that turns unstructured input into structured fields and makes no flow decisions. Domains plug in as
