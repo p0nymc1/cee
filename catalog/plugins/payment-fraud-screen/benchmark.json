@@ -1,0 +1,9 @@
+{
+  "plugin": "payment-fraud-screen",
+  "events": [
+    {"workflow_ref": "payment-fraud-screen.evaluate", "context": {"risk_score": 10}},
+    {"workflow_ref": "payment-fraud-screen.evaluate", "context": {"risk_score": 28}},
+    {"workflow_ref": "payment-fraud-screen.evaluate", "context": {"risk_score": 55}},
+    {"workflow_ref": "payment-fraud-screen.evaluate", "context": {"risk_score": 92}}
+  ]
+}

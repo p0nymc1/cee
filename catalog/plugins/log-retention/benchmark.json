@@ -1,0 +1,9 @@
+{
+  "plugin": "log-retention",
+  "events": [
+    {"workflow_ref": "log-retention.evaluate", "context": {"legal_hold": false, "age_days": 30}},
+    {"workflow_ref": "log-retention.evaluate", "context": {"legal_hold": false, "age_days": 200}},
+    {"workflow_ref": "log-retention.evaluate", "context": {"legal_hold": false, "age_days": 400}},
+    {"workflow_ref": "log-retention.evaluate", "context": {"legal_hold": true, "age_days": 900}}
+  ]
+}

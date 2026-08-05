@@ -1,0 +1,9 @@
+{
+  "plugin": "pr-size-gate",
+  "events": [
+    {"workflow_ref": "pr-size-gate.evaluate", "context": {"lines_changed": 40}},
+    {"workflow_ref": "pr-size-gate.evaluate", "context": {"lines_changed": 320}},
+    {"workflow_ref": "pr-size-gate.evaluate", "context": {"lines_changed": 900}},
+    {"workflow_ref": "pr-size-gate.evaluate", "context": {"lines_changed": 3500}}
+  ]
+}

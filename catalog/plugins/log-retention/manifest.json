@@ -1,0 +1,25 @@
+{
+  "name": "log-retention",
+  "intents": [
+    {"node_id": "log-retention.assess", "examples": ["should this record be deleted", "retention policy check", "is this data past retention"], "entry_workflow_ref": "log-retention.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "under_legal_hold", "fallback_step_ref": "preserve"},
+    {"policy_id": "route_to_delete", "fallback_step_ref": "flag_for_deletion"}
+  ],
+  "workflows": [{
+    "workflow_id": "log-retention.evaluate",
+    "entry_step_id": "check_hold",
+    "steps": [
+      {"step_id": "check_hold", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "legal_hold", "op": "eq", "value": false},
+       "circuit_breaker_policy_ref": "under_legal_hold", "on_success": "check_age"},
+      {"step_id": "check_age", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "age_days", "op": "lte", "value": 365},
+       "circuit_breaker_policy_ref": "route_to_delete", "on_success": "retain"},
+      {"step_id": "retain", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "retain"}}},
+      {"step_id": "preserve", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "preserve_legal_hold"}}},
+      {"step_id": "flag_for_deletion", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "flag_for_deletion"}}}
+    ]
+  }]
+}

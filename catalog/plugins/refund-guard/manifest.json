@@ -1,0 +1,20 @@
+{
+  "name": "refund-guard",
+  "intents": [
+    {"node_id": "refund-guard.assess", "examples": ["assess a refund", "should this refund auto approve", "refund approval check"], "entry_workflow_ref": "refund-guard.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "route_to_manager", "fallback_step_ref": "manager_review"}
+  ],
+  "workflows": [{
+    "workflow_id": "refund-guard.evaluate",
+    "entry_step_id": "check_amount",
+    "steps": [
+      {"step_id": "check_amount", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "amount", "op": "lte", "value": 100},
+       "circuit_breaker_policy_ref": "route_to_manager", "on_success": "auto_approve"},
+      {"step_id": "auto_approve", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "auto_approved"}}},
+      {"step_id": "manager_review", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "manager_review"}}}
+    ]
+  }]
+}

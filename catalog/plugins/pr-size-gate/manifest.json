@@ -1,0 +1,25 @@
+{
+  "name": "pr-size-gate",
+  "intents": [
+    {"node_id": "pr-size-gate.assess", "examples": ["gate this pull request by size", "how big is this pr", "pr size review policy"], "entry_workflow_ref": "pr-size-gate.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "needs_review", "fallback_step_ref": "check_huge"},
+    {"policy_id": "route_to_block", "fallback_step_ref": "split_required"}
+  ],
+  "workflows": [{
+    "workflow_id": "pr-size-gate.evaluate",
+    "entry_step_id": "check_small",
+    "steps": [
+      {"step_id": "check_small", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "lines_changed", "op": "lte", "value": 400},
+       "circuit_breaker_policy_ref": "needs_review", "on_success": "auto_ok"},
+      {"step_id": "check_huge", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "lines_changed", "op": "lte", "value": 2000},
+       "circuit_breaker_policy_ref": "route_to_block", "on_success": "request_review"},
+      {"step_id": "auto_ok", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "auto_mergeable"}}},
+      {"step_id": "request_review", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "request_review"}}},
+      {"step_id": "split_required", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "split_this_pr"}}}
+    ]
+  }]
+}

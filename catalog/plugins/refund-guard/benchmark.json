@@ -1,0 +1,9 @@
+{
+  "plugin": "refund-guard",
+  "events": [
+    {"workflow_ref": "refund-guard.evaluate", "context": {"amount": 20}},
+    {"workflow_ref": "refund-guard.evaluate", "context": {"amount": 80}},
+    {"workflow_ref": "refund-guard.evaluate", "context": {"amount": 250}},
+    {"workflow_ref": "refund-guard.evaluate", "context": {"amount": 1000}}
+  ]
+}

@@ -19,6 +19,46 @@
       "manifest": "plugins/access-review/manifest.json",
       "benchmark": "plugins/access-review/benchmark.json",
       "tags": ["security", "compliance"]
+    },
+    {
+      "name": "refund-guard",
+      "description": "Auto-approves a refund under a threshold and routes larger ones to a manager.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "refund-guard",
+      "manifest": "plugins/refund-guard/manifest.json",
+      "benchmark": "plugins/refund-guard/benchmark.json",
+      "tags": ["finance", "support"]
+    },
+    {
+      "name": "payment-fraud-screen",
+      "description": "Bands a payment by risk score into approve, step-up authentication, or decline.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "payment-fraud-screen",
+      "manifest": "plugins/payment-fraud-screen/manifest.json",
+      "benchmark": "plugins/payment-fraud-screen/benchmark.json",
+      "tags": ["payments", "fraud", "risk"]
+    },
+    {
+      "name": "pr-size-gate",
+      "description": "Gates a pull request by lines changed: auto-mergeable, request review, or split it.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "pr-size-gate",
+      "manifest": "plugins/pr-size-gate/manifest.json",
+      "benchmark": "plugins/pr-size-gate/benchmark.json",
+      "tags": ["dev", "ci"]
+    },
+    {
+      "name": "log-retention",
+      "description": "Retains, preserves under legal hold, or flags a record for deletion past its retention window.",
+      "version": "0.1.0",
+      "tier": "L1",
+      "domain": "log-retention",
+      "manifest": "plugins/log-retention/manifest.json",
+      "benchmark": "plugins/log-retention/benchmark.json",
+      "tags": ["compliance", "ops"]
     }
   ]
 }

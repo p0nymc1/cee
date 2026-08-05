@@ -1,0 +1,25 @@
+{
+  "name": "payment-fraud-screen",
+  "intents": [
+    {"node_id": "payment-fraud-screen.score", "examples": ["screen this payment for fraud", "fraud risk check", "assess payment risk"], "entry_workflow_ref": "payment-fraud-screen.evaluate"}
+  ],
+  "policies": [
+    {"policy_id": "escalate_risk", "fallback_step_ref": "check_high"},
+    {"policy_id": "route_to_decline", "fallback_step_ref": "decline"}
+  ],
+  "workflows": [{
+    "workflow_id": "payment-fraud-screen.evaluate",
+    "entry_step_id": "check_low",
+    "steps": [
+      {"step_id": "check_low", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "risk_score", "op": "lte", "value": 30},
+       "circuit_breaker_policy_ref": "escalate_risk", "on_success": "approve"},
+      {"step_id": "check_high", "type": "leaf", "action_ref": "std.require",
+       "with": {"field": "risk_score", "op": "lte", "value": 70},
+       "circuit_breaker_policy_ref": "route_to_decline", "on_success": "step_up"},
+      {"step_id": "approve", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "approved"}}},
+      {"step_id": "step_up", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "step_up_auth"}}},
+      {"step_id": "decline", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "declined"}}}
+    ]
+  }]
+}
