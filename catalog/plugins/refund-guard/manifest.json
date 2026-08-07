@@ -11,7 +11,7 @@
     "entry_step_id": "check_amount",
     "steps": [
       {"step_id": "check_amount", "type": "leaf", "action_ref": "std.require",
-       "with": {"field": "amount", "op": "lte", "value": 50},
+       "with": {"field": "amount", "op": "lte", "value": 30},
        "circuit_breaker_policy_ref": "route_to_manager", "on_success": "auto_approve"},
       {"step_id": "auto_approve", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "auto_approved"}}},
       {"step_id": "manager_review", "type": "leaf", "action_ref": "std.set", "with": {"fields": {"disposition": "manager_review"}}}
