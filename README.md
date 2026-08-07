@@ -62,7 +62,7 @@ go build ./... && go vet ./... && go test ./...
 CEE is a library, not a service. Your existing handler calls `engine.Run(...)`; nothing listens on a port by default.
 
 ```bash
-go get github.com/p0nymc1/cee@v0.1.0
+go get github.com/p0nymc1/cee@v0.2.0
 ```
 
 - [`examples/quickstart`](examples/quickstart/main.go) — minimal refund desk (pay / park for a manager / probe blocks a closed account).
