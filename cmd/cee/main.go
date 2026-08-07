@@ -13,6 +13,7 @@ import (
 	"github.com/p0nymc1/cee/intentrouter"
 	"github.com/p0nymc1/cee/llmhttp"
 	"github.com/p0nymc1/cee/manifest"
+	"github.com/p0nymc1/cee/policydiff"
 	"github.com/p0nymc1/cee/registry"
 	"github.com/p0nymc1/cee/stdlib"
 	"net"
@@ -34,6 +35,8 @@ func main() {
 		os.Exit(runServe(os.Args[2:]))
 	case "validate":
 		os.Exit(runValidate(os.Args[2:]))
+	case "diff":
+		os.Exit(runDiff(os.Args[2:]))
 	case "lint":
 		os.Exit(runLint(os.Args[2:]))
 	case "list":
@@ -59,6 +62,7 @@ usage:
   cee draft "<description>"          draft a workflow from a description
   cee serve <manifest.json> [addr]   serve one manifest over HTTP (local trial)
   cee validate <manifest.json>       statically check one domain manifest
+  cee diff <before> <after> <events> replay past decisions against a changed manifest
   cee lint [catalog_dir]             check a whole catalog's integrity
   cee list [catalog_dir]             list the plugins in a catalog
   cee install <name> [catalog_dir]   fetch a plugin manifest into ./plugins
@@ -88,6 +92,68 @@ func runValidate(args []string) int {
 	report := manifest.Validate(data, stdlib.Default())
 	fmt.Println(report.String())
 	if !report.OK() {
+		return 1
+	}
+	return 0
+}
+
+func runDiff(args []string) int {
+	markdown := false
+	failOnChange := false
+	var positional []string
+	for _, a := range args {
+		switch a {
+		case "--markdown":
+			markdown = true
+		case "--fail-on-change":
+			failOnChange = true
+		default:
+			positional = append(positional, a)
+		}
+	}
+	if len(positional) != 3 {
+		fmt.Fprintln(os.Stderr,
+			"usage: cee diff <before.json> <after.json> <events.json> [--markdown] [--fail-on-change]")
+		return 2
+	}
+
+	before, err := os.ReadFile(positional[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee diff: %v\n", err)
+		return 2
+	}
+	after, err := os.ReadFile(positional[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee diff: %v\n", err)
+		return 2
+	}
+	eventsData, err := os.ReadFile(positional[2])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee diff: %v\n", err)
+		return 2
+	}
+	suite, err := bench.ParseSuite(eventsData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee diff: %v\n", err)
+		return 2
+	}
+
+	report, err := policydiff.Compare(before, after, suite, stdlib.Default())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cee diff: %v\n", err)
+		return 2
+	}
+
+	if markdown {
+		fmt.Print(report.Markdown())
+	} else {
+		fmt.Print(report.Text())
+	}
+
+	// A changed decision is information, not an error, so the default exit code
+	// is 0 -- a policy change is usually meant to change decisions. Gate a merge
+	// on it only when the caller asks.
+	if failOnChange && report.Flipped() > 0 {
 		return 1
 	}
 	return 0

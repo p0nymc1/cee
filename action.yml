@@ -1,0 +1,135 @@
+name: "CEE policy diff"
+description: >-
+  Replay historical decisions against a changed policy manifest and comment on
+  the pull request with which of them would come out differently.
+author: "CEE"
+
+branding:
+  icon: git-pull-request
+  color: green
+
+inputs:
+  manifest:
+    description: "Path to the policy manifest that this pull request changes."
+    required: true
+  events:
+    description: >-
+      Path to a dataset of historical inputs, in the same JSON shape as a
+      plugin benchmark: {"events": [{"workflow_ref": "...", "context": {...}}]}.
+    required: true
+  base-ref:
+    description: >-
+      The ref to compare against. Defaults to the pull request's base branch,
+      so the "before" manifest is the one already merged.
+    required: false
+    default: ""
+  comment:
+    description: "Post the report as a pull-request comment."
+    required: false
+    default: "true"
+  fail-on-change:
+    description: >-
+      Fail the check when any decision changes. Off by default: a policy change
+      is usually meant to change decisions, so this is a review signal, not an
+      error.
+    required: false
+    default: "false"
+  cee-version:
+    description: "Version of the cee module to install."
+    required: false
+    default: "latest"
+
+outputs:
+  flipped:
+    description: "How many past decisions changed."
+    value: ${{ steps.diff.outputs.flipped }}
+  report:
+    description: "The Markdown report."
+    value: ${{ steps.diff.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.26"
+        cache: false
+
+    - name: Install cee
+      shell: bash
+      run: go install github.com/p0nymc1/cee/cmd/cee@${{ inputs.cee-version }}
+
+    - name: Resolve the manifest as it is on the base branch
+      id: before
+      shell: bash
+      run: |
+        set -euo pipefail
+        base="${{ inputs.base-ref }}"
+        if [ -z "$base" ]; then
+          base="origin/${{ github.event.pull_request.base.ref }}"
+        fi
+        git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref }}" >/dev/null 2>&1 || true
+
+        before_file="$(mktemp)"
+        if git show "$base:${{ inputs.manifest }}" > "$before_file" 2>/dev/null; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          # New manifest: nothing to compare against, so there is no history to
+          # replay and the action says so instead of inventing a baseline.
+          echo "found=false" >> "$GITHUB_OUTPUT"
+        fi
+        echo "path=$before_file" >> "$GITHUB_OUTPUT"
+
+    - name: Replay historical decisions
+      id: diff
+      if: steps.before.outputs.found == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        report_file="$(mktemp)"
+        set +e
+        cee diff "${{ steps.before.outputs.path }}" "${{ inputs.manifest }}" "${{ inputs.events }}" --markdown > "$report_file"
+        status=$?
+        set -e
+        if [ $status -ne 0 ]; then
+          echo "cee diff failed:" >&2
+          cat "$report_file" >&2
+          exit $status
+        fi
+
+        cat "$report_file"
+        flipped="$(grep -oE '^### [0-9]+ of' "$report_file" | grep -oE '[0-9]+' | head -1 || echo 0)"
+        echo "flipped=${flipped:-0}" >> "$GITHUB_OUTPUT"
+        {
+          echo "report<<CEE_EOF"
+          cat "$report_file"
+          echo "CEE_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Comment on the pull request
+      if: steps.before.outputs.found == 'true' && inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const body = `<!-- cee-policy-diff -->\n` + process.env.REPORT;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+
+          // Update the existing comment rather than adding one per push.
+          const comments = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const mine = comments.data.find(c => c.body && c.body.includes('<!-- cee-policy-diff -->'));
+          if (mine) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+      env:
+        REPORT: ${{ steps.diff.outputs.report }}
+
+    - name: Fail when decisions change
+      if: steps.before.outputs.found == 'true' && inputs.fail-on-change == 'true' && steps.diff.outputs.flipped != '0'
+      shell: bash
+      run: |
+        echo "::error::${{ steps.diff.outputs.flipped }} past decisions would change under this policy."
+        exit 1
