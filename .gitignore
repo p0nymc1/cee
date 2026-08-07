@@ -32,3 +32,6 @@
 /meta_scenarios
 /crypto_surveillance
 /local_netwatch
+
+# Site generator binary (built into bin/ by make site)
+/.github/site/ceesite

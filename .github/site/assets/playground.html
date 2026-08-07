@@ -1,0 +1,295 @@
+<h1>Playground</h1>
+<p class="tag">Edit a policy, watch the decisions it makes — and watch which past decisions your edit would change.</p>
+
+<div class="meta">
+This runs the real engine. The Go module is compiled to WebAssembly and executes
+in your browser: no server, no account, nothing sent anywhere. A JavaScript
+re-implementation would be a second engine that drifts from the first, which for
+a project about determinism would defeat the point.
+</div>
+
+<div id="boot" class="boot">Loading the engine…</div>
+
+<div id="app" hidden>
+
+  <div class="controls">
+    <label for="preset">Example policy</label>
+    <select id="preset"></select>
+    <button id="reset" type="button" class="ghost">Reset to baseline</button>
+  </div>
+
+  <div class="grid">
+    <section>
+      <div class="lbl">
+        <span>Policy <em>(JSON manifest — edit me)</em></span>
+        <span id="status" class="status"></span>
+      </div>
+      <textarea id="manifest" spellcheck="false" rows="22"></textarea>
+      <div id="issues" class="issues"></div>
+    </section>
+
+    <section>
+      <div class="lbl"><span>Historical inputs</span></div>
+      <textarea id="events" spellcheck="false" rows="22"></textarea>
+    </section>
+  </div>
+
+  <div id="verdict" class="verdict" hidden></div>
+
+  <h2>Decisions</h2>
+  <p class="hint">Every input above, run through the policy as it stands. A row is
+  highlighted when your edit changed what it decides.</p>
+  <div class="scroll"><table id="results" class="board">
+    <thead><tr><th>#</th><th>Input</th><th>Decision</th><th>Path</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+
+</div>
+
+<style>
+.boot { color: var(--mut); padding: 2rem 0; }
+.controls { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: 1.5rem 0 1rem; }
+.controls label { color: var(--mut); font-size: .85rem; }
+select, button {
+  font: inherit; font-size: .9rem; color: var(--fg); background: var(--code);
+  border: 1px solid var(--bd); border-radius: 6px; padding: .4rem .7rem;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+.lbl { display: flex; justify-content: space-between; align-items: baseline;
+       margin-bottom: .35rem; font-size: .85rem; color: var(--mut); }
+.lbl em { font-style: normal; opacity: .75; }
+textarea {
+  width: 100%; box-sizing: border-box; background: var(--code); color: var(--fg);
+  border: 1px solid var(--bd); border-radius: 6px; padding: .8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem; line-height: 1.5; resize: vertical; tab-size: 2;
+}
+textarea:focus { outline: none; border-color: var(--accent); }
+.status { font-size: .78rem; }
+.status.ok { color: var(--accent); }
+.status.bad { color: #e06c6c; }
+.issues { margin-top: .5rem; font-size: .8rem; }
+.issues div { padding: .3rem .55rem; border-radius: 4px; margin-bottom: .3rem; }
+.issues .error { background: rgba(224,108,108,.12); color: #e06c6c; }
+.issues .warning { background: rgba(200,160,60,.12); color: #c8a03c; }
+.verdict { margin: 1.75rem 0 0; padding: 1rem 1.15rem; border-radius: 8px;
+           border: 1px solid var(--bd); background: var(--soft); }
+.verdict b { font-size: 1.5rem; color: var(--accent); display: block; }
+.verdict .sub { color: var(--mut); font-size: .875rem; margin-top: .2rem; }
+.hint { color: var(--mut); font-size: .875rem; }
+tr.flipped td { background: rgba(93,202,165,.09); }
+.flag { display: inline-block; font-size: .68rem; letter-spacing: .04em;
+        border-radius: 99px; padding: .05rem .5rem; margin-left: .4rem;
+        background: var(--accent); color: #08211b; font-weight: 600; }
+.was { color: var(--mut); text-decoration: line-through; }
+.change { margin-top: .3rem; font-size: .82rem; }
+.arrow { color: var(--accent); padding: 0 .3rem; }
+.path { color: var(--mut); font-family: ui-monospace, monospace; font-size: .76rem; }
+.err { color: #e06c6c; font-size: .8rem; }
+td .k { color: var(--mut); }
+</style>
+
+<script src="wasm_exec.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var PRESETS = {};      // filled by the generator below this script
+  var baseline = "";     // the manifest we diff against
+  var timer = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function boot() {
+    if (!window.WebAssembly) {
+      $("boot").textContent = "This browser has no WebAssembly support.";
+      return;
+    }
+    var go = new Go();
+    WebAssembly.instantiateStreaming(fetch("cee.wasm"), go.importObject)
+      .then(function (res) {
+        go.run(res.instance);
+        start();
+      })
+      .catch(function (e) {
+        $("boot").textContent = "Could not load the engine: " + e;
+      });
+  }
+
+  function start() {
+    var sel = $("preset");
+    Object.keys(PRESETS).forEach(function (name) {
+      var o = document.createElement("option");
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function () { load(sel.value); });
+
+    $("reset").addEventListener("click", function () { load(sel.value); });
+    $("manifest").addEventListener("input", schedule);
+    $("events").addEventListener("input", schedule);
+
+    load(Object.keys(PRESETS)[0]);
+    $("boot").hidden = true;
+    $("app").hidden = false;
+  }
+
+  function load(name) {
+    var p = PRESETS[name];
+    $("manifest").value = p.manifest;
+    $("events").value = p.events;
+    baseline = p.manifest;
+    refresh();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 220);
+  }
+
+  function call(fn) {
+    try {
+      return JSON.parse(fn());
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }
+
+  function refresh() {
+    var manifest = $("manifest").value;
+    var events = $("events").value;
+
+    var v = call(function () { return ceeValidate(manifest); });
+    var status = $("status");
+    var issues = $("issues");
+    issues.textContent = "";
+
+    if (v.error) {
+      status.textContent = "invalid JSON";
+      status.className = "status bad";
+      return;
+    }
+    (v.issues || []).forEach(function (it) {
+      var d = document.createElement("div");
+      d.className = it.severity;
+      d.textContent = it.severity + ": " + it.message;
+      issues.appendChild(d);
+    });
+    if (v.ok) {
+      status.textContent = "valid";
+      status.className = "status ok";
+    } else {
+      status.textContent = "has errors";
+      status.className = "status bad";
+      renderRows([], {});
+      return;
+    }
+
+    var run = call(function () { return ceeRunSuite(manifest, events); });
+    if (run.error) {
+      status.textContent = run.error;
+      status.className = "status bad";
+      renderRows([], {});
+      return;
+    }
+
+    // Diff the edited policy against the one we started from. This is the
+    // point of the page: not "what does it do" but "what would change".
+    var flips = {};
+    var verdict = $("verdict");
+    if (manifest.trim() !== baseline.trim()) {
+      var d = call(function () { return ceeDiff(baseline, manifest, events); });
+      if (!d.error) {
+        (d.outcomes || []).forEach(function (o) { flips[o.index] = o.changes; });
+        verdict.hidden = false;
+        verdict.innerHTML =
+          "<b>" + d.flipped + " of " + d.events + " past decisions would change</b>" +
+          "<div class='sub'>" +
+          (d.explanations
+            ? d.explanations + " more keep the same outcome; only the recorded reason or the path changes."
+            : "Everything else decides exactly as before.") +
+          "</div>";
+      }
+    } else {
+      verdict.hidden = true;
+    }
+
+    renderRows(run.rows || [], flips);
+  }
+
+  function text(el, s) { el.textContent = s; return el; }
+
+  function renderRows(rows, flips) {
+    var body = $("results").querySelector("tbody");
+    body.textContent = "";
+
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      if (flips[r.index]) tr.className = "flipped";
+
+      tr.appendChild(text(document.createElement("td"), r.index));
+      tr.appendChild(text(document.createElement("td"), r.input));
+
+      var dec = document.createElement("td");
+      var keys = Object.keys(r.decision || {});
+      if (keys.length) {
+        keys.forEach(function (k, i) {
+          if (i) dec.appendChild(document.createTextNode("  "));
+          var span = document.createElement("span");
+          var kk = document.createElement("span");
+          kk.className = "k"; kk.textContent = k + "=";
+          span.appendChild(kk);
+          span.appendChild(document.createTextNode(String(r.decision[k])));
+          dec.appendChild(span);
+        });
+      } else {
+        dec.appendChild(text(document.createElement("span"), "—"));
+      }
+      if (r.suspended) {
+        var s = document.createElement("span");
+        s.className = "flag"; s.textContent = "suspended";
+        dec.appendChild(s);
+      }
+      if (flips[r.index]) {
+        flips[r.index].forEach(function (c) {
+          var w = document.createElement("div");
+          w.className = "change";
+          var f = document.createElement("span");
+          f.className = "k"; f.textContent = c.field + ": ";
+          var was = document.createElement("span");
+          was.className = "was"; was.textContent = c.before;
+          var ar = document.createElement("span");
+          ar.className = "arrow"; ar.textContent = "→";
+          w.appendChild(f); w.appendChild(was); w.appendChild(ar);
+          w.appendChild(document.createTextNode(c.after));
+          dec.appendChild(w);
+        });
+      }
+      if (r.error) {
+        var e = document.createElement("div");
+        e.className = "err"; e.textContent = r.error;
+        dec.appendChild(e);
+      }
+      tr.appendChild(dec);
+
+      var path = document.createElement("td");
+      path.className = "path";
+      path.textContent = (r.trace || []).join(" → ");
+      if (r.reason) {
+        var why = document.createElement("div");
+        why.className = "err"; why.textContent = r.reason;
+        path.appendChild(why);
+      }
+      tr.appendChild(path);
+
+      body.appendChild(tr);
+    });
+  }
+
+  window.__ceePresets = function (p) { PRESETS = p; };
+  window.addEventListener("load", boot);
+})();
+</script>

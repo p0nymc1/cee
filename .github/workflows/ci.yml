@@ -235,6 +235,16 @@ jobs:
           ( cd .github/site && go test ./... && go build -o "$GITHUB_WORKSPACE/ceesite" . )
           ./ceesite
 
+      # The playground runs the real engine in the browser, compiled to
+      # WebAssembly, rather than a JavaScript re-implementation that would drift.
+      - name: Compile the engine to WebAssembly
+        run: |
+          mkdir -p site/playground
+          GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o site/playground/cee.wasm ./cmd/ceewasm
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" site/playground/wasm_exec.js \
+            || cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" site/playground/wasm_exec.js
+          ls -la site/playground
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

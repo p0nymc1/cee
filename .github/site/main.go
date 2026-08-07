@@ -2,14 +2,20 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
+	"encoding/json"
 	"fmt"
 	"html"
 	"html/template"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
+
+//go:embed assets/playground.html
+var playgroundBody string
 
 type page struct {
 	Title       string
@@ -72,10 +78,88 @@ func run() error {
 	if err := s.writeBlog(posts); err != nil {
 		return err
 	}
+	presets, err := loadPresets("catalog")
+	if err != nil {
+		return err
+	}
+	if err := s.writePlayground(presets); err != nil {
+		return err
+	}
 
-	fmt.Printf("built %s: home, leaderboard (%d ranked), blog (%d posts)\n",
-		s.out, len(board.Entries), len(posts))
+	fmt.Printf("built %s: home, leaderboard (%d ranked), blog (%d posts), playground (%d presets)\n",
+		s.out, len(board.Entries), len(posts), len(presets))
 	return nil
+}
+
+// preset is one ready-made policy the playground offers, taken from the catalog
+// so the examples are the same artifacts the leaderboard ranks rather than
+// prose written for the page.
+type preset struct {
+	Manifest string `json:"manifest"`
+	Events   string `json:"events"`
+}
+
+func loadPresets(catalogDir string) (map[string]preset, error) {
+	data, err := os.ReadFile(filepath.Join(catalogDir, "index.json"))
+	if err != nil {
+		return nil, nil
+	}
+	var index struct {
+		Plugins []struct {
+			Name      string `json:"name"`
+			Manifest  string `json:"manifest"`
+			Benchmark string `json:"benchmark"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil, fmt.Errorf("playground presets: %w", err)
+	}
+
+	presets := map[string]preset{}
+	for _, p := range index.Plugins {
+		if p.Manifest == "" || p.Benchmark == "" {
+			continue
+		}
+		manifestData, err := os.ReadFile(filepath.Join(catalogDir, p.Manifest))
+		if err != nil {
+			continue
+		}
+		eventsData, err := os.ReadFile(filepath.Join(catalogDir, p.Benchmark))
+		if err != nil {
+			continue
+		}
+		presets[p.Name] = preset{
+			Manifest: string(manifestData),
+			Events:   string(eventsData),
+		}
+	}
+	return presets, nil
+}
+
+func (s *site) writePlayground(presets map[string]preset) error {
+	// Marshal with HTML escaping on (the default), so nothing in a manifest can
+	// close the script element it is embedded in.
+	encoded, err := json.Marshal(presets)
+	if err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(presets))
+	for name := range presets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	body := playgroundBody +
+		fmt.Sprintf("\n<script>window.__ceePresets(%s);</script>\n", encoded)
+
+	return s.render("playground/index.html", page{
+		Title:       "Playground — CEE",
+		Description: "Edit a policy in the browser and watch which past decisions your change would flip. Runs the real engine, compiled to WebAssembly.",
+		Nav:         "play",
+		Root:        "../",
+		Body:        template.HTML(body),
+	})
 }
 
 func envOr(key, fallback string) string {

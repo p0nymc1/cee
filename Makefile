@@ -19,7 +19,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build install uninstall test lint bench serve draft stats site clean
+.PHONY: help build install uninstall test lint bench serve draft stats site playground clean
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -89,6 +89,14 @@ site: ## Build the published site into ./site (runs the examples first)
 	@grep -rh '^func Test' --include='*_test.go' . | wc -l | tr -d ' ' > demo-output/tests.txt
 	@cd .github/site && go build -o "$(CURDIR)/$(BIN_DIR)/ceesite" .
 	@$(BIN_DIR)/ceesite
+	@$(MAKE) --no-print-directory playground
+
+playground: ## Compile the engine to WebAssembly for the browser playground
+	@mkdir -p site/playground
+	@GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o site/playground/cee.wasm ./cmd/ceewasm
+	@cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" site/playground/wasm_exec.js 2>/dev/null || \
+	 cp "$$(go env GOROOT)/misc/wasm/wasm_exec.js" site/playground/wasm_exec.js
+	@printf 'playground: %s wasm\n' "$$(du -h site/playground/cee.wasm | cut -f1)"
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) demo-output site

@@ -85,6 +85,7 @@ const shell = `<!doctype html>
 <nav><div>
   <span class="brand">CEE</span>
   <a href="{{.Root}}"{{if eq .Nav "home"}} class="here"{{end}}>What ran</a>
+  <a href="{{.Root}}playground/"{{if eq .Nav "play"}} class="here"{{end}}>Playground</a>
   <a href="{{.Root}}leaderboard/"{{if eq .Nav "board"}} class="here"{{end}}>Leaderboard</a>
   <a href="{{.Root}}blog/"{{if eq .Nav "blog"}} class="here"{{end}}>Blog</a>
   <a href="https://github.com/{{.Repo}}">Source</a>
