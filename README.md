@@ -14,6 +14,8 @@ manifests or Go hooks without changing engine code.
 - **No-code plugins** — a JSON manifest plus the standard action library is enough to ship a validated plugin.
 - **Measured, not asserted** — every run emits a scorecard; a leaderboard ranks plugins by model calls eliminated.
 
+**New here?** [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) turns a threshold rule into a replayable policy — and shows which past decisions a change would flip — in about ten minutes, no Go. Or try it in the browser: [playground](https://p0nymc1.github.io/cee/playground/).
+
 ## Architecture
 
 ```mermaid
