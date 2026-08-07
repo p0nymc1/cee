@@ -35,9 +35,12 @@ inputs:
     required: false
     default: "false"
   cee-version:
-    description: "Version of the cee module to install."
+    description: >-
+      Version of the cee module to install. Defaults to main because `cee diff`
+      is newer than the latest tag, so @latest would install a binary without
+      it. Pin a tag once one ships that includes the subcommand.
     required: false
-    default: "latest"
+    default: "main"
 
 outputs:
   flipped:

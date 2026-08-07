@@ -1,0 +1,52 @@
+# Runs the repository's own action against its own catalog. A pull request that
+# edits a plugin manifest gets a comment saying which of that plugin's
+# historical benchmark decisions the edit would change.
+#
+# This is the action's only end-to-end test: a composite action cannot be
+# exercised by `go test`, so it is exercised here, on real manifests.
+name: Policy diff
+
+on:
+  pull_request:
+    paths:
+      - "catalog/plugins/**/manifest.json"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the changed manifest
+        id: find
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.event.pull_request.base.ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- 'catalog/plugins/*/manifest.json' | head -1)"
+          if [ -z "$changed" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          events="$(dirname "$changed")/benchmark.json"
+          if [ ! -f "$events" ]; then
+            echo "::notice::$changed changed but has no benchmark.json to replay against"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "found=true"            >> "$GITHUB_OUTPUT"
+          echo "manifest=$changed"     >> "$GITHUB_OUTPUT"
+          echo "events=$events"        >> "$GITHUB_OUTPUT"
+          echo "changed $changed, replaying $events"
+
+      - name: Replay past decisions
+        if: steps.find.outputs.found == 'true'
+        uses: ./
+        with:
+          manifest: ${{ steps.find.outputs.manifest }}
+          events: ${{ steps.find.outputs.events }}
